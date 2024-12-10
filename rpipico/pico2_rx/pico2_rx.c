@@ -1,12 +1,18 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
 #include "hardware/timer.h"
+#include "lcd.h"
 
 // Optimizacion baja para que no se ignoren las variables en el debugger
 #pragma GCC optimize("O0")
 
 // GPIO para usar de entrada de datos
 #define RX_GPIO     16
+
+#define I2C_PORT    i2c_default
+#define LCD_ADDR    0x27 
+#define SDA_GPIO    4
+#define SCL_GPIO    5
 
 /**
  * @brief Cantidad de microsegundos de ancho de pulso
@@ -45,6 +51,8 @@ void gpio_rx_irq_cb(uint gpio, uint32_t event_mask) {
     }
 }
 
+void init_default_i2c(uint16_t f_khz);
+
 /**
  * @brief Programa principal
  */
@@ -59,11 +67,22 @@ int main(void) {
     gpio_pull_down(RX_GPIO);
     // Habilito interrupcion por flanco ascendente y descendente
     gpio_set_irq_enabled_with_callback(RX_GPIO, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, gpio_rx_irq_cb);
-    
+
+    // I2C & LCD
+    init_default_i2c(100);
+    lcd_init(I2C_PORT, LCD_ADDR);
+    // Limpia la pantalla
+    lcd_clear();
+    lcd_set_cursor(1, 0);
+    lcd_string("Esperando ...   ");
+
     // Variable para armar la trama de datos
     uint16_t data = 0;
     // Contador para armar la trama
     uint8_t counter = 0;
+    // Variable para mostrar en lcd
+    char text_data[MAX_CHARS + 1] = "";
+    char aux_buffer[MAX_CHARS + 1] = "";
 
     while (true) {
 
@@ -74,18 +93,26 @@ int main(void) {
 
                 case DUTY_BIT_ZERO:
                     // Si es un cero, solo paso al siguiente bit
+                    text_data[counter] = '0';
                     counter++;
+                    lcd_set_cursor(0, 0);
+                    lcd_string("Leyendo ...     ");
                     break;
             
                 case DUTY_BIT_ONE:
                     // Si es un uno, lo agrego a la trama
+                    text_data[counter] = '1';
                     data |= 1 << (15 - counter++);
+                    lcd_set_cursor(0, 0);
+                    lcd_string("Leyendo ...     "); 
                     break;
 
                 case DUTY_NO_BIT:
                     // Cuando no hay bit para analizar, se limpia
                     data = 0;
                     counter = 0;
+                    lcd_set_cursor(1, 0);
+                    lcd_string("Esperando ...   ");
                     break;
 
                 default:
@@ -94,11 +121,26 @@ int main(void) {
 
             // Veo si termino la trama
             if(counter == 16) {
-                // Y aca que hacemos??
+                lcd_set_cursor(0, 0);
+                sprintf(aux_buffer, "Valor: 0x%X", data);
+                printf(aux_buffer);
+                    
+                lcd_set_cursor(1, 0);
+                lcd_string(text_data);
             }
 
             // Espero el proximo bit
             bit_captured = false;
         }
     }
+}
+
+
+void init_default_i2c(uint16_t f_khz) {
+    
+    i2c_init(I2C_PORT, f_khz*1000);
+    gpio_set_function(SDA_GPIO, GPIO_FUNC_I2C);
+    gpio_set_function(SCL_GPIO, GPIO_FUNC_I2C);
+    gpio_pull_up(SDA_GPIO);
+    gpio_pull_up(SCL_GPIO);
 }

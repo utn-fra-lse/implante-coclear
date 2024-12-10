@@ -1,1 +1,7 @@
-build
+build/
+pico-sdk/
+generated/
+_deps/
+CMakeFiles/
+pico_flash_region.ld
+CMakeCache.txt
