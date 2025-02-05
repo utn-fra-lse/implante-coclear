@@ -1,1 +1,10 @@
-build
+build/
+pico-sdk/
+generated/
+_deps/
+CMakeFiles/
+pico_flash_region.ld
+CMakeCache.txt
+build.ninja
+compile_commands.json
+cmake_install.cmake
