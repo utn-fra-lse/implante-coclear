@@ -10,6 +10,7 @@
 // GPIO para usar de entrada de datos
 #define RX_GPIO     16
 #define MAX_DUTY_TEST   0
+#define PULSE_WIDTH 4
 
 #define I2C_PORT    i2c_default
 #define LCD_ON      0
@@ -20,7 +21,6 @@
 /**
  * @brief Cantidad de microsegundos de ancho de pulso
  */
-#define PULSE_WIDTH 4
 typedef enum {
     DUTY_BIT_ZERO = 1,
     DUTY_NO_BIT = 2,
