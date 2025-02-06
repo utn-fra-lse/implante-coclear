@@ -38,9 +38,10 @@ pico_sdk_init()
 add_executable(pico2_rx 
     pico2_rx.c
     src/lcd.c
+    src/modify_clock.c
 )
 
-add_subdirectory(rpipico-lcd)
+# add_subdirectory(rpipico-lcd)
 
 pico_set_program_name(pico2_rx "pico2_rx")
 pico_set_program_version(pico2_rx "0.1")
@@ -66,7 +67,7 @@ target_include_directories(pico2_rx PRIVATE
 target_link_libraries(pico2_rx 
         hardware_i2c
         hardware_timer
+        hardware_clocks
         )
 
 pico_add_extra_outputs(pico2_rx)
-

@@ -6,6 +6,7 @@
 #define TX_GPIO     6
 // GPIO para trigger
 #define TRIG_GPIO   16
+#define PULSE_WIDTH 4
 
 /**
  * @brief Cantidad de microsegundos de ancho de pulso
@@ -33,7 +34,8 @@ bool timer_cb(repeating_timer_t *t) {
     // Estructura local de control
     duty_control_t *control = (duty_control_t*)(t->user_data);
     // Apaga la salida cuando se cumple el duty
-    if(count == control->duty) { gpio_put(TX_GPIO, false); }
+    if(count == control->duty)
+        gpio_put(TX_GPIO, false);
     else if(count == 4) {
         // Prendo la salida cuando se tiene que resetear el ciclo
         gpio_put(TX_GPIO, true);
@@ -53,7 +55,9 @@ bool timer_cb(repeating_timer_t *t) {
 int main(void) {
 
     stdio_init_all();
-
+    uint16_t test_data[4] = {0xa796, 0xabcd, 0x1234, 0x5678};
+    uint8_t test_data_index = 0;
+    uint16_t data;
     // Timer para generar las interrupciones
     repeating_timer_t timer;
     // Estructura de control para la trama de datos
@@ -71,11 +75,11 @@ int main(void) {
 #endif
 
     // Timer cada 2us, comparte estructura de control
-    add_repeating_timer_us(-2, timer_cb, (void*) &control, &timer);
+    add_repeating_timer_us(-PULSE_WIDTH, timer_cb, (void*) &control, &timer);
 
     while(1) {
     	// Trama de datos de prueba
-    	uint16_t data = 0xa796;
+    	data = test_data[test_data_index];
     	// 1	0	1	0	0	1	1	1	1 	0 	0 	1 	0 	1 	1 	0
     	// 75%	25%	75%	25%	25%	75%	75%	75%	75%	25%	25%	75%	25%	75%	75%	25%
 
@@ -102,6 +106,7 @@ int main(void) {
     
         // Fin de trama
         control.duty = DUTY_NO_BIT;
+        test_data_index = (test_data_index + 1) % 4;
         sleep_ms(1);
     }
     return 0;
