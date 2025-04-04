@@ -8,9 +8,9 @@
 #pragma GCC optimize("O0")
 
 // GPIO para usar de entrada de datos
-#define RX_GPIO     16
+#define RX_GPIO         16
 #define MAX_DUTY_TEST   0
-#define PULSE_WIDTH 4
+#define PULSE_WIDTH     2
 
 #define I2C_PORT    i2c_default
 #define LCD_ON      0
@@ -75,6 +75,8 @@ int main(void) {
 
     // bool status_clk = change_sys_clock(1);
     clock_stop(clk_adc);
+    clock_stop(clk_peri);
+    // clock_stop(clk_usb);
     printf("\nNew Freqs:\n");
     measure_freqs();
 
@@ -86,6 +88,7 @@ int main(void) {
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, true);
     gpio_put(PICO_DEFAULT_LED_PIN, false);
+
     // Habilito interrupcion por flanco ascendente y descendente
     gpio_set_irq_enabled_with_callback(RX_GPIO, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, gpio_rx_irq_cb);
 
@@ -166,10 +169,12 @@ int main(void) {
                         printf("Errors DC %i: %i\n", i, logger_errors[i]);
                     }
                 #endif
+                
                 // Muestro el valor en hexadecimal
                 sprintf(aux_buffer, "Valor: 0x%X", data);
                 printf(aux_buffer);
                 printf("\n");
+
                 #if LCD_ON
                     lcd_set_cursor(0, 0);
                     lcd_string(aux_buffer);

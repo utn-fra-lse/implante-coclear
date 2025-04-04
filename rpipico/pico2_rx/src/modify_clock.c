@@ -28,8 +28,8 @@ void resus_callback(void) {
     // T = 3uS => div = 16 (4x4)
     // T = 4uS => div = 25 (5x5)
     uint16_t freq_pll = 1500;
-    uint16_t post_div1 = 5;
-    uint16_t post_div2 = 5;
+    uint16_t post_div1 = 4;
+    uint16_t post_div2 = 4;
     uint16_t final_freq = freq_pll / post_div1 / post_div2;
     pll_init(pll_sys, 1, freq_pll * MHZ, post_div1, post_div2);
 
