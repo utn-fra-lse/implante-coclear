@@ -6,7 +6,7 @@
 #define TX_GPIO     6
 // GPIO para trigger
 #define TRIG_GPIO   16
-#define PULSE_WIDTH 4
+#define PULSE_WIDTH 2
 
 /**
  * @brief Cantidad de microsegundos de ancho de pulso

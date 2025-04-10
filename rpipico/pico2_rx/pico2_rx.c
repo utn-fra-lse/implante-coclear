@@ -7,10 +7,11 @@
 // Optimizacion baja para que no se ignoren las variables en el debugger
 #pragma GCC optimize("O0")
 
+
 // GPIO para usar de entrada de datos
 #define RX_GPIO         16
-#define MAX_DUTY_TEST   0
-#define PULSE_WIDTH     2
+
+#define MAX_DATA 32
 
 #define I2C_PORT    i2c_default
 #define LCD_ON      0
@@ -27,10 +28,10 @@ typedef enum {
     DUTY_BIT_ONE = 3
 } duty_us_t;
 
-// Variable de ancho de pulso en us
-volatile uint64_t duty_us = 0;
+
 // Booleano para habilitar el main
 volatile bool bit_captured = false;
+volatile uint64_t duty_us = 0;
 
 /**
  * @brief Callback para la interrupcion
@@ -40,19 +41,17 @@ volatile bool bit_captured = false;
 void gpio_rx_irq_cb(uint gpio, uint32_t event_mask) {
     // Variables para marcas de tiempo
     static absolute_time_t t_rise;
+    
     // Veo si esta alto el GPIO
     if(event_mask & GPIO_IRQ_EDGE_RISE) {
         // Marca de tiempo cuando sube
         t_rise = get_absolute_time();
         return;
     }
-    // if(event_mask & GPIO_IRQ_EDGE_FALL) {
-        // El GPIO esta bajo, marco el tiempo del pulso
+    // El GPIO esta bajo, marco el tiempo del pulso
     // Saco la diferencia
-    duty_us = absolute_time_diff_us(t_rise, get_absolute_time()) / PULSE_WIDTH;
-    // Aviso a main
+    duty_us = absolute_time_diff_us(t_rise, get_absolute_time()) >> 1;
     bit_captured = true;
-    // }
 }
 
 void init_default_i2c(uint16_t f_khz);
@@ -63,7 +62,7 @@ void init_default_i2c(uint16_t f_khz);
 int main(void) {
 
     stdio_init_all();
-    sleep_ms(4000);
+    sleep_ms(6000);
     printf("Clock inical!\n");
 
     measure_freqs();
@@ -85,6 +84,7 @@ int main(void) {
     gpio_init(RX_GPIO);
     gpio_set_dir(RX_GPIO, false);
     gpio_pull_down(RX_GPIO);
+
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, true);
     gpio_put(PICO_DEFAULT_LED_PIN, false);
@@ -104,77 +104,48 @@ int main(void) {
     #endif
 
     // Variable para armar la trama de datos
-    uint16_t data = 0;
+    uint16_t buf_data[MAX_DATA] = {0};
+    uint16_t buf_data_index = 0;
+
     // Contador para armar la trama
+    uint16_t data = 0;
     uint8_t counter = 0;
-    #if MAX_DUTY_TEST
-        uint8_t counter_errors = 0;
-        uint8_t logger_errors[MAX_DUTY_TEST];
-        for (int i = 0; i < MAX_DUTY_TEST; i++) {
-            logger_errors[i] = 0;
-        }
-    #endif
+
     // Variable para mostrar en lcd
-    char text_data[MAX_CHARS + 1] = "";
     char aux_buffer[MAX_CHARS + 1] = "";
-
+    
     while (true) {
-
-        // Avanzo cuando la interrupcion haya capturado el bit
+        // Espero a que se capture un bit
         if(bit_captured) {
             // Evaluo que ancho de pulso es
             switch(duty_us) {
                 case DUTY_BIT_ZERO:
                     // Si es un cero, solo paso al siguiente bit
-                    text_data[counter] = '0';
                     counter++;
                     break;
-            
-                case DUTY_BIT_ONE:
+                    
+                    case DUTY_BIT_ONE:
                     // Si es un uno, lo agrego a la trama
-                    text_data[counter] = '1';
                     data |= 1 << (15 - counter++);
                     break;
 
-                case DUTY_NO_BIT:
+                    case DUTY_NO_BIT:
                     // Cuando no hay bit para analizar, se limpia
                     data = 0;
                     counter = 0;
-                    #if MAX_DUTY_TEST
-                        counter_errors = 0;
-                        
-                        for (int i = 0; i < MAX_DUTY_TEST; i++) {
-                            logger_errors[i] = 0;
-                        }
-                    #endif
                     break;
-
-                case 0:
-                    break;
-                default:
-                    #if MAX_DUTY_TEST
-                        if (duty_us < MAX_DUTY_TEST) {
-                            logger_errors[duty_us]++;
-                        }
-                        counter_errors++;
-                    #endif
+                    
+                    default:
                     break;
             }
-
+                
             // Veo si termino la trama
             if(counter == 16) {
-                #if MAX_DUTY_TEST
-                    printf("Count Errors: %d\n\n", counter_errors);
-                    for (int i = 0; i < MAX_DUTY_TEST; i++) {
-                        printf("Errors DC %i: %i\n", i, logger_errors[i]);
-                    }
-                #endif
-                
                 // Muestro el valor en hexadecimal
                 sprintf(aux_buffer, "Valor: 0x%X", data);
                 printf(aux_buffer);
                 printf("\n");
-
+                
                 #if LCD_ON
                     lcd_set_cursor(0, 0);
                     lcd_string(aux_buffer);
@@ -188,7 +159,6 @@ int main(void) {
                         gpio_put(PICO_DEFAULT_LED_PIN, false);
                 #endif
             }
-
             // Espero el proximo bit
             bit_captured = false;
         }
