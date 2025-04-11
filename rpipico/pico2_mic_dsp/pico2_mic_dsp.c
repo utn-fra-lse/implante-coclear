@@ -3,14 +3,17 @@
 #include "pico/multicore.h"
 #include "hardware/adc.h"
 #include "hardware/dma.h"
+#include "arm_math.h"
 
 // Channel 0 is GPIO26
 #define CAPTURE_CHANNEL 0
+// The max9814 has a 1.25V offset and output of 2Vpp: (0.25, 2.25V)
+// Con 8 bits 1.23V * 255 / 3.3V = 95 
+#define MIC_OFFSET 95
 #define FFT_SIZE 4096
 #define SAMPLE_RATE 500000.0f
 const float freq_resolution = (SAMPLE_RATE / FFT_SIZE);
 
-#include "arm_math.h"
 
 uint8_t capture_buf_0[FFT_SIZE];
 uint8_t capture_buf_1[FFT_SIZE];
@@ -97,11 +100,13 @@ int main()
 }
 
 void normalize_buffer(uint8_t *buffer, float *normalized_buffer, int size) {
-    // TO-DO: Scale the buffer to center the 1.25V offset
-
+    // Scale the buffer to center the 1.25V offset
+    // TO-DO: Test if this is correct
+    int8_t aux_val = 0;
     // Normalize the buffer to the range [-1.0, 1.0]
     for (int i = 0; i < size; ++i) {
-        normalized_buffer[i] = ((float)buffer[i] - 128.0f) / 128.0f;
+        aux_val = buffer[i] - MIC_OFFSET;
+        normalized_buffer[i] = (float) aux_val / 128.0f;
     }
 }
 
