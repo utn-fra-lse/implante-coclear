@@ -100,8 +100,12 @@ int main(void) {
     
         // Fin de trama
         control.duty = DUTY_NO_BIT;
+        // Apago el flag
+        control.next_bit = false;
+        // Espero a que este lista la interrupcion
+        while(!control.next_bit);
         test_data_index = (test_data_index + 1) % 4;
-        sleep_ms(1);
+        sleep_ms(5);
     }
     return 0;
 }
