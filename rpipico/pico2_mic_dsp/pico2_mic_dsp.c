@@ -12,6 +12,8 @@
 #define MIC_OFFSET 95
 #define FFT_SIZE 4096
 #define SAMPLE_RATE 500000.0f
+
+#define MAX_SEND_SAMPLES 256
 const float freq_resolution = (SAMPLE_RATE / FFT_SIZE);
 
 
@@ -21,6 +23,10 @@ uint8_t capture_buf_1[FFT_SIZE];
 volatile bool buffer0_full = false;
 volatile bool buffer1_full = false;
 void core1_main();
+
+void send_samples(float *samples, int size);
+void normalize_buffer(uint8_t *buffer, float *normalized_buffer, int size);
+
 
 
 int main()
@@ -99,16 +105,6 @@ int main()
     }
 }
 
-void normalize_buffer(uint8_t *buffer, float *normalized_buffer, int size) {
-    // Scale the buffer to center the 1.25V offset
-    // TO-DO: Test if this is correct
-    int8_t aux_val = 0;
-    // Normalize the buffer to the range [-1.0, 1.0]
-    for (int i = 0; i < size; ++i) {
-        aux_val = buffer[i] - MIC_OFFSET;
-        normalized_buffer[i] = (float) aux_val / 128.0f;
-    }
-}
 
 
 void core1_main() {
@@ -135,12 +131,14 @@ void core1_main() {
         } else if (buffer1_full) {
             // printf("[CORE 1] Printing buffer 1:\n");
             // for (int i = 0; i < FFT_SIZE; ++i) {
-            //     printf("%d, ", capture_buf_1[i]);
-            //     if (i % 10 == 9) printf("\n");
+            //     printf("%u", capture_buf_1[i]);
+            //     if (i < (FFT_SIZE -1))
+            //         printf(",");
             // }
+            
             // printf("\n\n[CORE 1] Done printing buffer 1\n");
             normalize_buffer(capture_buf_1, input_f32, FFT_SIZE);
-
+            
             
             buffer1_full = false;
         } else {
@@ -156,11 +154,30 @@ void core1_main() {
         // Print first 20 FFT magnitudes
         printf("[CORE 1] First 20 FFT magnitudes:\n");
 
-        printf("[");
-        for (int i = 0; i < FFT_SIZE / 2; i += 16) {
-            printf("%.5f", magnitudes[i]);
-            if (i < FFT_SIZE / 2 - 16) printf(",");
-        }
-        printf("]\n");
+        send_samples(magnitudes, MAX_SEND_SAMPLES);
+
+    }
+}
+
+void send_samples(float *samples, int size) {
+    // Send samples to core 1
+    printf("[");
+    for (int i = 0; i < size; i += 1) {
+        printf("%.5f", samples[i]);
+        if (i < (size - 1))
+            printf(",");
+    }
+    printf("]\n");
+
+}
+
+
+void normalize_buffer(uint8_t *buffer, float *normalized_buffer, int size) {
+    // Scale the buffer to center the 1.25V offset
+    int8_t aux_val = 0;
+    // Normalize the buffer to the range [-1.0, 1.0]
+    for (int i = 0; i < size; ++i) {
+        aux_val = (int8_t) buffer[i] - MIC_OFFSET;
+        normalized_buffer[i] = (float) aux_val / 128.0f;
     }
 }
