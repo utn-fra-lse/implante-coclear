@@ -60,7 +60,7 @@ int main(void) {
     gpio_set_function(TX_GPIO, GPIO_FUNC_PWM);
     pwm_config config = pwm_get_default_config();
     slice = pwm_gpio_to_slice_num(TX_GPIO);
-    pwm_config_set_wrap(&config, 1000.0);
+    pwm_config_set_wrap(&config, 1000);
     // Interrupcion de PWM en cada wrap
     pwm_clear_irq(slice);
     pwm_set_irq_enabled(slice, true);
@@ -86,17 +86,13 @@ int main(void) {
     #endif
     	// Analizo bit a bit y cambio el PWM        
     	for(uint8_t i = 0; i < 16; i++) {
-    		// Apago el flag
-    		control.next_bit = false;
-    		// Espero a que este lista la interrupcion
-    		while(!control.next_bit);
             // Asigno el ancho de pulso segun si es 1 o 0
     		control.duty = (data & (1 << (15 - i)))? DUTY_BIT_ONE : DUTY_BIT_ZERO;
+            // Apago el flag
+            control.next_bit = false;
+            // Espero a que este lista la interrupcion
+            while(!control.next_bit);
     	}
-        // Apago el flag
-        control.next_bit = false;
-        // Espero a que este lista la interrupcion
-        while(!control.next_bit);
     
     #ifdef TRIG_GPIO
         gpio_put(TRIG_GPIO, false);
