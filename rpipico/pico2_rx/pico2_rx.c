@@ -12,16 +12,18 @@
 // GPIO para usar de entrada de datos
 #define RX_GPIO     16
 
+// #define __LCD_ON__
 #define I2C_PORT    i2c_default
-#define LCD_ON      0
 #define LCD_ADDR    0x27 
 #define SDA_GPIO    4
 #define SCL_GPIO    5
 
 // Clock para el PIO
-#define PIO_CLK_KHZ         5000.0
+#define PIO_CLK_KHZ         3000.0
 // Cada tick medido con el PIO toma dos ciclos de clock
 #define PIO_TICKS_TO_US(x)  ((2 * 1000 * x) / PIO_CLK_KHZ)
+
+#define MAX_CHARS   16
 
 void init_default_i2c(uint16_t f_khz);
 
@@ -66,8 +68,7 @@ void pio_irq_handler(void) {
  */
 int main(void) {
     // Clock del sistema para USB
-    set_sys_clock_khz(125000, true);
-    stdio_init_all();
+    set_sys_clock_khz(30000, true);
 
     // Inicialización de cola
     queue_init(&g_queue, sizeof(uint16_t), 1);
@@ -93,31 +94,34 @@ int main(void) {
     pio_sm_set_enabled(pio, sm, true);
 
 // I2C & LCD
-#if LCD_ON
-    init_default_i2c(100);
+#ifdef __LCD_ON__
+    init_default_i2c(400);
     lcd_init(I2C_PORT, LCD_ADDR);
     // Limpia la pantalla
     lcd_clear();
-    lcd_set_cursor(0, 0);
-    lcd_string("Esperando...");
-    sleep_ms(1000);
-
+    lcd_string("Data: 0x");
     // Variable para mostrar en lcd
     char text_data[MAX_CHARS + 1] = "";
-    char aux_buffer[MAX_CHARS + 1] = "";
 #endif
 
     uint16_t data;
     while (true) {
         // Reviso si hay elementos en el FIFO
         if(queue_try_remove(&g_queue, &data)) {
-            // Muestro lo recibido y bajo flag
-            printf("Data: 0x%04x\n\n", data);
+#ifdef __LCD_ON__
+            // Muestro lo recibido
+            sprintf(text_data, "%04x", data);
+            lcd_set_cursor(0, 8);
+            lcd_string(text_data);
+#endif
+            data = 0;
         }
     }
 }
 
-
+/**
+ * @brief Inicialización de I2C
+ */
 void init_default_i2c(uint16_t f_khz) {
     
     i2c_init(I2C_PORT, f_khz*1000);
