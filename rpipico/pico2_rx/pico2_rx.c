@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
+#include "pico/util/queue.h"
 #include "hardware/pio.h"
 #include "hardware/clocks.h"
 #include "lcd.h"
@@ -24,9 +25,8 @@
 
 void init_default_i2c(uint16_t f_khz);
 
-// Variables para compartir entre interrupción y main
-volatile uint16_t g_data = 0;
-volatile bool pio_done = false;
+// Cola para compartir datos entre interrupcion y main
+queue_t g_queue;
 
 /**
  * @brief Handler de interrupcion por dato
@@ -52,8 +52,9 @@ void pio_irq_handler(void) {
         // Reinicio contador cuando se obtuvo la trama entera 
         if(ticks_index == 16) {
             // Reinicio variables y paso datos al main
-            ticks_index = 0; pio_done = true;
-            g_data = data; data = 0;
+            ticks_index = 0;
+            queue_try_add(&g_queue, (void*)&data);
+            data = 0;
         }
     }
     // Limpio flag de interrupción
@@ -67,6 +68,9 @@ int main(void) {
     // Clock del sistema para USB
     set_sys_clock_khz(125000, true);
     stdio_init_all();
+
+    // Inicialización de cola
+    queue_init(&g_queue, sizeof(uint16_t), 1);
 
     // Inicializacion de PIO
     PIO pio = pio0;
@@ -103,12 +107,12 @@ int main(void) {
     char aux_buffer[MAX_CHARS + 1] = "";
 #endif
 
+    uint16_t data;
     while (true) {
         // Reviso si hay elementos en el FIFO
-        if(pio_done) {
+        if(queue_try_remove(&g_queue, &data)) {
             // Muestro lo recibido y bajo flag
-            pio_done = false;
-            printf("Data: 0x%04x\n\n", g_data);
+            printf("Data: 0x%04x\n\n", data);
         }
     }
 }
