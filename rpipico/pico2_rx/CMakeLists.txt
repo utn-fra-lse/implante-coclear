@@ -41,6 +41,8 @@ add_executable(pico2_rx
     src/modify_clock.c
 )
 
+pico_generate_pio_header(pico2_rx ${CMAKE_CURRENT_LIST_DIR}/pwm_capture.pio)
+
 # add_subdirectory(rpipico-lcd)
 
 pico_set_program_name(pico2_rx "pico2_rx")
@@ -65,9 +67,11 @@ target_include_directories(pico2_rx PRIVATE
 
 # Add any user requested libraries
 target_link_libraries(pico2_rx 
-        hardware_i2c
-        hardware_timer
-        hardware_clocks
-        )
+    hardware_i2c
+    hardware_timer
+    hardware_clocks
+    hardware_pwm
+    hardware_pio
+)
 
 pico_add_extra_outputs(pico2_rx)
