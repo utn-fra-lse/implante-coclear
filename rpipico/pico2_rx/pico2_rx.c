@@ -1,196 +1,125 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
-#include "hardware/timer.h"
+#include "pico/util/queue.h"
+#include "hardware/pio.h"
+#include "hardware/clocks.h"
 #include "lcd.h"
-#include "modify_clock.h"
+#include "pwm_capture.pio.h"
 
 // Optimizacion baja para que no se ignoren las variables en el debugger
 #pragma GCC optimize("O0")
 
 // GPIO para usar de entrada de datos
 #define RX_GPIO     16
-#define MAX_DUTY_TEST   0
-#define PULSE_WIDTH 4
 
+// #define __LCD_ON__
 #define I2C_PORT    i2c_default
-#define LCD_ON      0
 #define LCD_ADDR    0x27 
 #define SDA_GPIO    4
 #define SCL_GPIO    5
 
-/**
- * @brief Cantidad de microsegundos de ancho de pulso
- */
-typedef enum {
-    DUTY_BIT_ZERO = 1,
-    DUTY_NO_BIT = 2,
-    DUTY_BIT_ONE = 3
-} duty_us_t;
+// Clock para el PIO
+#define PIO_CLK_KHZ         3000.0
+// Cada tick medido con el PIO toma dos ciclos de clock
+#define PIO_TICKS_TO_US(x)  ((2 * 1000 * x) / PIO_CLK_KHZ)
 
-// Variable de ancho de pulso en us
-volatile uint64_t duty_us = 0;
-// Booleano para habilitar el main
-volatile bool bit_captured = false;
-
-/**
- * @brief Callback para la interrupcion
- * @param gpio numero de GPIO que dispara la interrupcion
- * @param event_mask tipo de evento que ocurrio (GPIO_IRQ_EDGE_RISE o GPIO_IRQ_EDGE_FALL)
- */
-void gpio_rx_irq_cb(uint gpio, uint32_t event_mask) {
-    // Variables para marcas de tiempo
-    static absolute_time_t t_rise;
-    // Veo si esta alto el GPIO
-    if(event_mask & GPIO_IRQ_EDGE_RISE) {
-        // Marca de tiempo cuando sube
-        t_rise = get_absolute_time();
-        return;
-    }
-    // if(event_mask & GPIO_IRQ_EDGE_FALL) {
-        // El GPIO esta bajo, marco el tiempo del pulso
-    // Saco la diferencia
-    duty_us = absolute_time_diff_us(t_rise, get_absolute_time()) / PULSE_WIDTH;
-    // Aviso a main
-    bit_captured = true;
-    // }
-}
+#define MAX_CHARS   16
 
 void init_default_i2c(uint16_t f_khz);
+
+// Cola para compartir datos entre interrupcion y main
+queue_t g_queue;
+
+/**
+ * @brief Handler de interrupcion por dato
+ * en el FIFO RX del PIO
+ */
+void pio_irq_handler(void) {
+    // Variables locales
+    static uint32_t ticks_index = 0;
+    static uint16_t data = 0;
+    // Sigue intentando mientras haya datos en el FIFO
+    while(!pio_sm_is_rx_fifo_empty(pio0, 0)) {
+        // Calculo cuantos ticks tomó el pulso
+        uint32_t x = 0xffffffff - pio_sm_get(pio0, 0);
+        // Lo convierto a ancho de pulso en us
+        float duty_us = PIO_TICKS_TO_US(x);
+        // Si es un 75% de ancho de pulso es un 1
+        if(duty_us > 5) { data |= 1 << (15 - ticks_index++); }
+        // Si es un 25% de ancho de pulso es un 0
+        else if(duty_us < 3) { ticks_index++; }
+        // Reinicio contador cuando se obtuvo la trama entera
+        // o se obtuvo un 50% de ancho de pulso
+        if(ticks_index == 16) {
+            // Reinicio variables y paso datos al main
+            ticks_index = 0;
+            queue_try_add(&g_queue, (void*)&data);
+            data = 0;
+        }
+    }
+    // Limpio flag de interrupción
+    pio_interrupt_clear(pio0, 0);
+}
 
 /**
  * @brief Programa principal
  */
 int main(void) {
+    // Clock del sistema para USB
+    set_sys_clock_khz(30000, true);
 
-    stdio_init_all();
-    sleep_ms(4000);
-    printf("Clock inical!\n");
+    // Inicialización de cola
+    queue_init(&g_queue, sizeof(uint16_t), 1);
 
-    measure_freqs();
-    
-    clocks_enable_resus(&resus_callback);
-    // Break PLL sys
-    pll_deinit(pll_sys);
-    while(!seen_resus);
+    // Inicializacion de PIO
+    PIO pio = pio0;
+    uint32_t sm = pio_claim_unused_sm(pio, true);
+    // Habilito GPIO para el PIO
+    pio_gpio_init(pio, RX_GPIO);
+    // Cargo programa de PIO
+    uint32_t offset = pio_add_program(pio, &pwm_capture_program);
+    pio_sm_config c = pwm_capture_program_get_default_config(offset);
+    // Elijo el GPIO para la instrucción jmp
+    sm_config_set_jmp_pin(&c, RX_GPIO);
+    // Divisor de frecuencia para que el PIO corra a PIO_CLK_KHZ
+    sm_config_set_clkdiv(&c, frequency_count_khz(CLOCKS_FC0_SRC_VALUE_CLK_SYS) / PIO_CLK_KHZ);
+    // Habilito interrupción
+    pio_set_irq0_source_enabled(pio0, pis_sm0_rx_fifo_not_empty, true);
+    irq_set_exclusive_handler(PIO0_IRQ_0, pio_irq_handler);
+    irq_set_enabled(PIO0_IRQ_0, true);
+    // Habilito el PIO
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
 
-    // bool status_clk = change_sys_clock(1);
-    clock_stop(clk_adc);
-    printf("\nNew Freqs:\n");
-    measure_freqs();
-
-
-    // Inicializacion del GPIO
-    gpio_init(RX_GPIO);
-    gpio_set_dir(RX_GPIO, false);
-    gpio_pull_down(RX_GPIO);
-    gpio_init(PICO_DEFAULT_LED_PIN);
-    gpio_set_dir(PICO_DEFAULT_LED_PIN, true);
-    gpio_put(PICO_DEFAULT_LED_PIN, false);
-    // Habilito interrupcion por flanco ascendente y descendente
-    gpio_set_irq_enabled_with_callback(RX_GPIO, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, gpio_rx_irq_cb);
-
-    // I2C & LCD
-    #if LCD_ON
-        init_default_i2c(100);
-        lcd_init(I2C_PORT, LCD_ADDR);
-        // Limpia la pantalla
-        lcd_clear();
-        lcd_set_cursor(0, 0);
-        lcd_string("Esperando...");
-        sleep_ms(1000);
-    #endif
-
-    // Variable para armar la trama de datos
-    uint16_t data = 0;
-    // Contador para armar la trama
-    uint8_t counter = 0;
-    #if MAX_DUTY_TEST
-        uint8_t counter_errors = 0;
-        uint8_t logger_errors[MAX_DUTY_TEST];
-        for (int i = 0; i < MAX_DUTY_TEST; i++) {
-            logger_errors[i] = 0;
-        }
-    #endif
+// I2C & LCD
+#ifdef __LCD_ON__
+    init_default_i2c(400);
+    lcd_init(I2C_PORT, LCD_ADDR);
+    // Limpia la pantalla
+    lcd_clear();
+    lcd_string("Data: 0x");
     // Variable para mostrar en lcd
     char text_data[MAX_CHARS + 1] = "";
-    char aux_buffer[MAX_CHARS + 1] = "";
+#endif
 
+    uint16_t data;
     while (true) {
-
-        // Avanzo cuando la interrupcion haya capturado el bit
-        if(bit_captured) {
-            // Evaluo que ancho de pulso es
-            switch(duty_us) {
-                case DUTY_BIT_ZERO:
-                    // Si es un cero, solo paso al siguiente bit
-                    text_data[counter] = '0';
-                    counter++;
-                    break;
-            
-                case DUTY_BIT_ONE:
-                    // Si es un uno, lo agrego a la trama
-                    text_data[counter] = '1';
-                    data |= 1 << (15 - counter++);
-                    break;
-
-                case DUTY_NO_BIT:
-                    // Cuando no hay bit para analizar, se limpia
-                    data = 0;
-                    counter = 0;
-                    #if MAX_DUTY_TEST
-                        counter_errors = 0;
-                        
-                        for (int i = 0; i < MAX_DUTY_TEST; i++) {
-                            logger_errors[i] = 0;
-                        }
-                    #endif
-                    break;
-
-                case 0:
-                    break;
-                default:
-                    #if MAX_DUTY_TEST
-                        if (duty_us < MAX_DUTY_TEST) {
-                            logger_errors[duty_us]++;
-                        }
-                        counter_errors++;
-                    #endif
-                    break;
-            }
-
-            // Veo si termino la trama
-            if(counter == 16) {
-                #if MAX_DUTY_TEST
-                    printf("Count Errors: %d\n\n", counter_errors);
-                    for (int i = 0; i < MAX_DUTY_TEST; i++) {
-                        printf("Errors DC %i: %i\n", i, logger_errors[i]);
-                    }
-                #endif
-                // Muestro el valor en hexadecimal
-                sprintf(aux_buffer, "Valor: 0x%X", data);
-                printf(aux_buffer);
-                printf("\n");
-                #if LCD_ON
-                    lcd_set_cursor(0, 0);
-                    lcd_string(aux_buffer);
-                        
-                    lcd_set_cursor(1, 0);
-                    lcd_string(text_data);
-                #else
-                    if (data == 0xa796 || data == 0x1234)
-                        gpio_put(PICO_DEFAULT_LED_PIN, true);
-                    else
-                        gpio_put(PICO_DEFAULT_LED_PIN, false);
-                #endif
-            }
-
-            // Espero el proximo bit
-            bit_captured = false;
+        // Reviso si hay elementos en el FIFO
+        if(queue_try_remove(&g_queue, &data)) {
+#ifdef __LCD_ON__
+            // Muestro lo recibido
+            sprintf(text_data, "%04x", data);
+            lcd_set_cursor(0, 8);
+            lcd_string(text_data);
+#endif
+            data = 0;
         }
     }
 }
 
-
+/**
+ * @brief Inicialización de I2C
+ */
 void init_default_i2c(uint16_t f_khz) {
     
     i2c_init(I2C_PORT, f_khz*1000);
