@@ -38,7 +38,6 @@ pico_sdk_init()
 add_executable(pico2_rx 
     pico2_rx.c
     src/lcd.c
-    src/modify_clock.c
 )
 
 pico_generate_pio_header(pico2_rx ${CMAKE_CURRENT_LIST_DIR}/pwm_capture.pio)
