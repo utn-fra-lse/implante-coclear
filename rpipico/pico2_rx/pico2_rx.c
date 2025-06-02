@@ -44,14 +44,12 @@ void pio_irq_handler(void) {
         uint32_t x = 0xffffffff - pio_sm_get(pio0, 0);
         // Lo convierto a ancho de pulso en us
         float duty_us = PIO_TICKS_TO_US(x);
-        // Solamente tomo los pulsos de 25% y 75% de ancho de pulso
-        if(duty_us < 3 || duty_us > 5) {
-            // Si es un 75% de ancho de pulso es un 1
-            if(duty_us > 4) { data |= 1 << (15 - ticks_index++); }
-            // Si es un 25% de ancho de pulso es un 0
-            else { ticks_index++; }
-        }
-        // Reinicio contador cuando se obtuvo la trama entera 
+        // Si es un 75% de ancho de pulso es un 1
+        if(duty_us > 5) { data |= 1 << (15 - ticks_index++); }
+        // Si es un 25% de ancho de pulso es un 0
+        else if(duty_us < 3) { ticks_index++; }
+        // Reinicio contador cuando se obtuvo la trama entera
+        // o se obtuvo un 50% de ancho de pulso
         if(ticks_index == 16) {
             // Reinicio variables y paso datos al main
             ticks_index = 0;
