@@ -39,6 +39,8 @@
     "files.associations": {
         "*.mpy": "python",
         "cmath": "c",
-        "cstdint": "c"
+        "cstdint": "c",
+        "multicore.h": "c",
+        "stdlib.h": "c"
     }
 }

@@ -44,8 +44,8 @@ project(pico2_mic_dsp C CXX ASM)
 pico_sdk_init()
 
 # CMSIS-DSP setup
-set(CMSIS_CORE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/lib/CMSIS/CMSIS)
-set(CMSIS_DSP_DIR  ${CMAKE_CURRENT_SOURCE_DIR}/lib/CMSIS-DSP)
+set(CMSIS_CORE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../CMSIS_lib/CMSIS/CMSIS)
+set(CMSIS_DSP_DIR  ${CMAKE_CURRENT_SOURCE_DIR}/../CMSIS_lib/CMSIS-DSP)
 
 include_directories(
     ${CMSIS_CORE_DIR}/Core/Include
@@ -57,7 +57,7 @@ file(GLOB CMSIS_DSP_SRC
     "${CMSIS_DSP_DIR}/Source/TransformFunctions/arm_rfft_fast_f32.c"
     "${CMSIS_DSP_DIR}/Source/TransformFunctions/arm_rfft_fast_init_f32.c"
     "${CMSIS_DSP_DIR}/Source/TransformFunctions/arm_cfft_f32.c"
-    "${CMSIS_DSP_DIR}/Source/TransformFunctions/arm_cfft_init_f32.c"  # <-- ADD THIS
+    "${CMSIS_DSP_DIR}/Source/TransformFunctions/arm_cfft_init_f32.c"
     "${CMSIS_DSP_DIR}/Source/TransformFunctions/arm_cfft_radix8_f32.c"
     "${CMSIS_DSP_DIR}/Source/TransformFunctions/arm_bitreversal2.c"
     "${CMSIS_DSP_DIR}/Source/CommonTables/arm_common_tables.c"
@@ -90,6 +90,7 @@ target_link_libraries(pico2_mic_dsp
     pico_stdlib
     hardware_adc
     hardware_dma
+    hardware_pwm
     pico_multicore
 )
 

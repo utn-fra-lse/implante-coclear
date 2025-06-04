@@ -1,6 +1,6 @@
-[submodule "rpipico/pico2_mic_dsp/lib/CMSIS-DSP"]
-	path = rpipico/pico2_mic_dsp/lib/CMSIS-DSP
+[submodule "rpipico/CMSIS_lib/CMSIS-DSP"]
+	path = rpipico/CMSIS_lib/CMSIS-DSP
 	url = https://github.com/ARM-software/CMSIS-DSP.git
-[submodule "rpipico/pico2_mic_dsp/lib/CMSIS"]
-	path = rpipico/pico2_mic_dsp/lib/CMSIS
+[submodule "rpipico/CMSIS_lib/CMSIS"]
+	path = rpipico/CMSIS_lib/CMSIS
 	url = git@github.com:ARM-software/CMSIS_6.git
