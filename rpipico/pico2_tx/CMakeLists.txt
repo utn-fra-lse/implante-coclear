@@ -57,6 +57,7 @@ target_include_directories(pico2_tx PRIVATE
 target_link_libraries(pico2_tx 
     hardware_timer
     hardware_pwm
+    hardware_clocks
 )
 
 pico_add_extra_outputs(pico2_tx)
