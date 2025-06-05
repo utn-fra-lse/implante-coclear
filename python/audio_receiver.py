@@ -1,21 +1,23 @@
 import serial
 import wave
 
-import serial.tools
 import serial.tools.list_ports
 
 SERIAL_PORT = "COM8"  # Seleccionar puerto serial
 BAUDRATE = 115200
-FFT_SIZE = 2048
-SAMPLE_FREQ = 40000  # Frecuencia de muestreo
-CHUNK_COUNT = 100  # Número de bloques a grabar
+FFT_SIZE = 1024
+SAMPLE_FREQ = 80000  # Frecuencia de muestreo
+CHUNK_COUNT = 250  # Número de bloques a grabar
 
 OUTPUT_WAV = "assets/grabacion.wav"
 
 def find_header(ser):
     while True:
-        if ser.read(1) == b'\xAA' and ser.read(1) == b'\x55':
-            return
+        first = ser.read(1)
+        if first == b'\xAA':
+            second = ser.read(1)
+            if second == b'\x55':
+                return
 
 def main():
     available_ports = serial.tools.list_ports.comports()
@@ -40,7 +42,7 @@ def main():
     with wave.open(OUTPUT_WAV, "wb") as wav_file:
         wav_file.setnchannels(1)
         wav_file.setsampwidth(1)  # 8 bits
-        wav_file.setframerate(40000)  # o el sample rate que uses
+        wav_file.setframerate(SAMPLE_FREQ)  # o el sample rate que uses
         wav_file.writeframes(audio_data)
 
     print(f"Grabación guardada como {OUTPUT_WAV}")
