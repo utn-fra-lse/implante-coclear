@@ -43,39 +43,8 @@ project(pico2_mic_dsp C CXX ASM)
 # Initialize Pico SDK
 pico_sdk_init()
 
-# CMSIS-DSP setup
-set(CMSIS_CORE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../CMSIS_lib/CMSIS/CMSIS)
-set(CMSIS_DSP_DIR  ${CMAKE_CURRENT_SOURCE_DIR}/../CMSIS_lib/CMSIS-DSP)
-
-include_directories(
-    ${CMSIS_CORE_DIR}/Core/Include
-    ${CMSIS_DSP_DIR}/Include
-    ${CMSIS_DSP_DIR}/PrivateInclude
-)
-
-file(GLOB CMSIS_DSP_SRC
-    "${CMSIS_DSP_DIR}/Source/TransformFunctions/arm_rfft_fast_f32.c"
-    "${CMSIS_DSP_DIR}/Source/TransformFunctions/arm_rfft_fast_init_f32.c"
-    "${CMSIS_DSP_DIR}/Source/TransformFunctions/arm_cfft_f32.c"
-    "${CMSIS_DSP_DIR}/Source/TransformFunctions/arm_cfft_init_f32.c"
-    "${CMSIS_DSP_DIR}/Source/TransformFunctions/arm_cfft_radix8_f32.c"
-    "${CMSIS_DSP_DIR}/Source/TransformFunctions/arm_bitreversal2.c"
-    "${CMSIS_DSP_DIR}/Source/CommonTables/arm_common_tables.c"
-    "${CMSIS_DSP_DIR}/Source/CommonTables/arm_const_structs.c"
-    "${CMSIS_DSP_DIR}/Source/BasicMathFunctions/arm_mult_f32.c"
-    "${CMSIS_DSP_DIR}/Source/BasicMathFunctions/arm_abs_f32.c"
-    "${CMSIS_DSP_DIR}/Source/ComplexMathFunctions/arm_cmplx_mag_f32.c"
-)
-
-
-# Main project sources
-set(PROJECT_SOURCES
-    pico2_mic_dsp.c
-    ${CMSIS_DSP_SRC}
-)
-
 # Create the executable with all sources
-add_executable(pico2_mic_dsp ${PROJECT_SOURCES})
+add_executable(pico2_mic_dsp pico2_mic_dsp.c)
 
 # Project info
 pico_set_program_name(pico2_mic_dsp "pico2_mic_dsp")
@@ -85,6 +54,14 @@ pico_set_program_version(pico2_mic_dsp "0.1")
 pico_enable_stdio_uart(pico2_mic_dsp 0)
 pico_enable_stdio_usb(pico2_mic_dsp 1)
 
+
+add_subdirectory(
+    ${CMAKE_CURRENT_LIST_DIR}/../CMSIS_lib ${CMAKE_BINARY_DIR}/CMSIS_lib
+)
+add_subdirectory(
+    ${CMAKE_CURRENT_LIST_DIR}/../utils ${CMAKE_BINARY_DIR}/utils
+)
+
 # Link with required libraries
 target_link_libraries(pico2_mic_dsp
     pico_stdlib
@@ -92,6 +69,8 @@ target_link_libraries(pico2_mic_dsp
     hardware_dma
     hardware_pwm
     pico_multicore
+    cmsis_lib
+    utils
 )
 
 # Include project dir
@@ -99,8 +78,6 @@ target_include_directories(pico2_mic_dsp PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
 )
 
-# Define target CPU macro for CMSIS-DSP
-target_compile_definitions(pico2_mic_dsp PRIVATE ARM_MATH_CM33)
 
 # Generate UF2 and other outputs
 pico_add_extra_outputs(pico2_mic_dsp)

@@ -5,26 +5,25 @@
 #include "hardware/adc.h"
 #include "hardware/dma.h"
 #include "hardware/pwm.h"
+
+#include "utils.h"
 #include "arm_math.h"
 
-#define TEST_FFT 0
 // Channel 0 is GPIO26
 #define CAPTURE_CHANNEL 0
-#define ADC_CLK_KHZ 40
+#define ADC_CLK_KHZ 80
 #define ADC_CLK_DIV (48000 / ADC_CLK_KHZ)
 
-#define PIN_PWM_TEST 2
+#define PIN_PWM_TEST1 2
+#define PIN_PWM_TEST2 4
 
 // The max9814 has a 1.25V offset and output of 2Vpp: (0.25, 2.25V)
 // Con 8 bits 1.23V * 255 / 3.3V = 95 
 #define MIC_OFFSET 128
 #define FFT_SIZE 2048
-#define SAMPLE_RATE (1000.0 * ADC_CLK_KHZ)
+#define SAMPLE_RATE ((uint32_t) 1000 * ADC_CLK_KHZ)
 
-#define MAX_SEND_SAMPLES 2048
-#define N_DATA_BUFFERS 2
-const float freq_resolution = (SAMPLE_RATE / FFT_SIZE);
-
+#define N_DATA_BUFFERS 3
 
 struct capture_data {
     uint8_t *buffer;
@@ -45,7 +44,6 @@ void normalize_buffer(uint8_t *buffer, float32_t *normalized_buffer, int size);
 void send_freq_magnitude_pairs(float32_t *magnitudes, int size, float32_t sample_rate);
 void init_adc_dma(uint dma_chan);
 
-void init_pwm_test(uint gpio_pin);
 
 void dma_irq0_handler(void) {
     // Clear the interrupt
@@ -63,10 +61,12 @@ int main()
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
     gpio_put(PICO_DEFAULT_LED_PIN, 0);
+    init_pwm_test(PIN_PWM_TEST1, 3000);
+    init_pwm_test(PIN_PWM_TEST2, 6000);
 
     // Start core1
     multicore_launch_core1(core1_fft);
-    init_pwm_test(PIN_PWM_TEST);
+    // multicore_launch_core1(core1_send_samples);
     
     for (uint8_t i = 0; i < N_DATA_BUFFERS; ++i) {
         data_buffers[i].buffer = (uint8_t *)malloc(FFT_SIZE * sizeof(uint8_t));
@@ -78,17 +78,28 @@ int main()
 
     printf("[CORE 0] Config DMA\n");
     // Set up the DMA to start transferring data as soon as it appears in FIFO
-    #if TEST_FFT
-    test_fft();
-    #else
-        dma_chan = dma_claim_unused_channel(true);
-        init_adc_dma(dma_chan);
-    #endif
+
+    dma_chan = dma_claim_unused_channel(true);
+    init_adc_dma(dma_chan);
     
 
     while(true) {
-        gpio_put(PICO_DEFAULT_LED_PIN, !gpio_get(PICO_DEFAULT_LED_PIN));
-        sleep_ms(500);
+        bool all_buffers_full = true;
+        for (uint8_t i = 0; i < N_DATA_BUFFERS; ++i) {
+            if (!data_buffers[i].full) {
+                all_buffers_full = false;
+                break;
+            }
+        }
+
+        if (all_buffers_full) {
+            printf("[CORE 0] All buffers full\n");
+            gpio_put(PICO_DEFAULT_LED_PIN, 1);
+        }
+        else {
+            gpio_put(PICO_DEFAULT_LED_PIN, 0);
+        }
+        sleep_ms(50);
     }
 }
 
@@ -192,7 +203,7 @@ void core1_fft() {
     
         // Print first 20 FFT magnitudes
         printf("[CORE 1] First 20 FFT magnitudes at %.0f:\n", SAMPLE_RATE);
-        send_freq_magnitude_pairs(magnitudes, MAX_SEND_SAMPLES, SAMPLE_RATE);
+        send_freq_magnitude_pairs(magnitudes, 512, SAMPLE_RATE);
     }
 }
 
@@ -222,46 +233,4 @@ void normalize_buffer(uint8_t *buffer, float32_t *normalized_buffer, int size) {
     }
 }
 
-
-void init_pwm_test(uint gpio_pin) {
-    gpio_set_function(PIN_PWM_TEST, GPIO_FUNC_PWM);
-    uint slice = pwm_gpio_to_slice_num(PIN_PWM_TEST);
-    uint channel = pwm_gpio_to_channel(PIN_PWM_TEST);
-    pwm_config config = pwm_get_default_config();
-    // 150 MHz clock sys / divs
-    pwm_config_set_clkdiv_int(&config, 250);
-    pwm_config_set_wrap(&config, 200); // Set the wrap value to 4 (for 50% duty cycle)
-    // Start the PWM
-    pwm_init(slice, &config, true);
-    // 50% duty cycle
-    pwm_set_chan_level(slice, channel, 100);
-}
-
-void test_fft() {
-    while(true) {
-        // Populate capture_buf_1 with a composition of 3 sinusoidals
-        if (data_buffers[0].full)
-        {
-            sleep_ms(10);
-        }
-        else
-        {
-            printf("[CORE 0] Polulating FFT on buffer 0...\n");
-            uint8_t *buffer = data_buffers[0].buffer;
-            for (int i = 0; i < FFT_SIZE; ++i) {
-                float t = (float)i / SAMPLE_RATE; // Time step
-                float signal = 
-                MIC_OFFSET  + 127 * (
-                    0.1f * sinf(2 * PI * 2000  * t) +  // 5 kHz
-                    0.5f * sinf(2 * PI * 10000 * t) + // 10 kHz
-                    0.3f * sinf(2 * PI * 12000 * t)   // 12 kHz
-                );
-                buffer[i] = (uint8_t)signal;
-            }
-            data_buffers[0].full = true;
-        }
-        printf("[CORE 0] Sleep 3s\n");
-        sleep_ms(3000);
-    }
-}
 

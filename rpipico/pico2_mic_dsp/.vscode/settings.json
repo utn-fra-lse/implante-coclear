@@ -41,6 +41,7 @@
         "cmath": "c",
         "cstdint": "c",
         "multicore.h": "c",
-        "stdlib.h": "c"
+        "stdlib.h": "c",
+        "utils.h": "c"
     }
 }
