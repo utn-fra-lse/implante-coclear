@@ -20,10 +20,10 @@
 // The max9814 has a 1.25V offset and output of 2Vpp: (0.25, 2.25V)
 // Con 8 bits 1.23V * 255 / 3.3V = 95 
 #define MIC_OFFSET 128
-#define FFT_SIZE 2048
-#define SAMPLE_RATE ((uint32_t) 1000 * ADC_CLK_KHZ)
+#define FFT_SIZE 1024
+#define SAMPLE_RATE ((uint32_t) (1000 * ADC_CLK_KHZ))
 
-#define N_DATA_BUFFERS 3
+#define N_DATA_BUFFERS 4
 
 struct capture_data {
     uint8_t *buffer;
@@ -41,7 +41,7 @@ void core1_fft();
 void core1_send_samples();
 
 void normalize_buffer(uint8_t *buffer, float32_t *normalized_buffer, int size);
-void send_freq_magnitude_pairs(float32_t *magnitudes, int size, float32_t sample_rate);
+void send_freq_magnitude_pairs(float32_t *magnitudes, uint16_t size, uint32_t sample_rate);
 void init_adc_dma(uint dma_chan);
 
 
@@ -61,8 +61,8 @@ int main()
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
     gpio_put(PICO_DEFAULT_LED_PIN, 0);
-    init_pwm_test(PIN_PWM_TEST1, 3000);
-    init_pwm_test(PIN_PWM_TEST2, 6000);
+    // init_pwm_test(PIN_PWM_TEST1, 3000);
+    // init_pwm_test(PIN_PWM_TEST2, 6000);
 
     // Start core1
     multicore_launch_core1(core1_fft);
@@ -194,7 +194,6 @@ void core1_fft() {
                 break;
             }
         }
-
         // Perform the real FFT
         arm_rfft_fast_f32(&fft_instance, input_f32, fft_output, 0);
     
@@ -203,16 +202,16 @@ void core1_fft() {
     
         // Print first 20 FFT magnitudes
         printf("[CORE 1] First 20 FFT magnitudes at %.0f:\n", SAMPLE_RATE);
-        send_freq_magnitude_pairs(magnitudes, 512, SAMPLE_RATE);
+        send_freq_magnitude_pairs(magnitudes, FFT_SIZE / 4, SAMPLE_RATE);
     }
 }
 
 
-void send_freq_magnitude_pairs(float32_t *magnitudes, int size, float32_t sample_rate) {
+void send_freq_magnitude_pairs(float32_t *magnitudes, uint16_t size, uint32_t sample_rate) {
     printf("[");  // start of JSON-like array or message
 
-    for (int i = 0; i < size; ++i) {
-        float32_t freq = (2 * i) * (sample_rate / FFT_SIZE);
+    for (uint16_t i = 0; i < size; ++i) {
+        float32_t freq = (2 * i) * ((float) sample_rate / FFT_SIZE);
         printf("%.1f:%.2f", freq, magnitudes[i]);
 
         if (i < size - 1)
@@ -232,5 +231,3 @@ void normalize_buffer(uint8_t *buffer, float32_t *normalized_buffer, int size) {
         normalized_buffer[2 * i + 1] = 0.0f;    
     }
 }
-
-
