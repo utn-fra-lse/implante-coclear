@@ -6,13 +6,14 @@
 #include "hardware/dma.h"
 #include "hardware/pwm.h"
 
+#include "pico/util/queue.h"
+
 #include "utils.h"
 #include "arm_math.h"
 
 // Channel 0 is GPIO26
 #define CAPTURE_CHANNEL 0
-#define ADC_CLK_KHZ 80
-#define ADC_CLK_DIV (48000 / ADC_CLK_KHZ)
+#define ADC_CLK_KHZ (uint16_t) 80
 
 #define PIN_PWM_TEST1 2
 #define PIN_PWM_TEST2 4
@@ -23,36 +24,41 @@
 #define FFT_SIZE 1024
 #define SAMPLE_RATE ((uint32_t) (1000 * ADC_CLK_KHZ))
 
-#define N_DATA_BUFFERS 4
+#define N_DATA_BUFFERS 5
 
-struct capture_data {
-    uint8_t *buffer;
-    volatile bool full;
-};
 
-struct capture_data data_buffers[N_DATA_BUFFERS] = {
-    { .buffer = NULL, .full = false }
-};
+uint8_t * buffers[N_DATA_BUFFERS];
+volatile uint8_t write_index = 0;
+volatile uint8_t write_ready_index = -1;
+volatile uint8_t read_index = 0;
 
-volatile uint8_t buffer_idx = 0;
+// read != write
+// if (write_index != read_index) {
+//     read_index 
+// }
+
 uint dma_chan;
 
 void core1_fft();
 void core1_send_samples();
 
-void normalize_buffer(uint8_t *buffer, float32_t *normalized_buffer, int size);
+void normalize_buffer(uint8_t *buffer, float32_t *normalized_buffer, uint16_t size);
 void send_freq_magnitude_pairs(float32_t *magnitudes, uint16_t size, uint32_t sample_rate);
-void init_adc_dma(uint dma_chan);
-
+void init_adc_clkdiv(uint16_t adc_clk_khz);
+void init_dma_with_irq(uint dma_chan);
 
 void dma_irq0_handler(void) {
     // Clear the interrupt
     dma_hw->ints0 = 1u << dma_chan;
 
-    data_buffers[buffer_idx].full = true; // Mark the current buffer as not full
-    buffer_idx = (buffer_idx + 1) % N_DATA_BUFFERS; // Move to the next buffer
+    write_index = (write_index + 1) % N_DATA_BUFFERS; // Move to the next buffer
+    if (write_index == read_index) {
+        // Buffers are full -> stop ADC
+        adc_run(false);
+        adc_fifo_drain();
+    }
     // Seleccionar el nuevo buffer y iniciar la transferencia
-    dma_channel_set_write_addr(dma_chan, data_buffers[buffer_idx].buffer, true);
+    dma_channel_set_write_addr(dma_chan, buffers[write_index], true);
 }
 
 int main()
@@ -68,31 +74,26 @@ int main()
     multicore_launch_core1(core1_fft);
     // multicore_launch_core1(core1_send_samples);
     
+    
     for (uint8_t i = 0; i < N_DATA_BUFFERS; ++i) {
-        data_buffers[i].buffer = (uint8_t *)malloc(FFT_SIZE * sizeof(uint8_t));
-        if (!data_buffers[i].buffer) {
+        uint8_t * aux_ptr = (uint8_t *) malloc(FFT_SIZE * sizeof(uint8_t));
+
+        if (!aux_ptr) {
             printf("[CORE 0] Failed to allocate memory for buffer %d\n", i);
             return -1;
         }
+        buffers[i] = aux_ptr;
     }
 
     printf("[CORE 0] Config DMA\n");
     // Set up the DMA to start transferring data as soon as it appears in FIFO
-
+    init_adc_clkdiv(ADC_CLK_KHZ);
     dma_chan = dma_claim_unused_channel(true);
-    init_adc_dma(dma_chan);
-    
+    init_dma_with_irq(dma_chan);
 
     while(true) {
-        bool all_buffers_full = true;
-        for (uint8_t i = 0; i < N_DATA_BUFFERS; ++i) {
-            if (!data_buffers[i].full) {
-                all_buffers_full = false;
-                break;
-            }
-        }
 
-        if (all_buffers_full) {
+        if (write_index == read_index) {
             printf("[CORE 0] All buffers full\n");
             gpio_put(PICO_DEFAULT_LED_PIN, 1);
         }
@@ -104,7 +105,7 @@ int main()
 }
 
 
-void init_adc_dma(uint dma_chan) {
+void init_adc_clkdiv(uint16_t adc_clk_khz) {
     // Init GPIO for analogue use: hi-Z, no pulls, disable digital input buffer.
     adc_gpio_init(26 + CAPTURE_CHANNEL);
     adc_init();
@@ -117,10 +118,14 @@ void init_adc_dma(uint dma_chan) {
         true     // Shift each sample to 8 bits when pushing to FIFO
     );
     adc_fifo_drain();
-
+    
     // It should be 0 or > 95, if 0 < div < 95 then div = 96
     // This is all timed by the 48 MHz ADC clock.
-    adc_set_clkdiv(ADC_CLK_DIV);
+    adc_set_clkdiv(48000.0 / adc_clk_khz);
+
+}
+
+void init_dma_with_irq(uint dma_chan) {
 
     dma_channel_config cfg = dma_channel_get_default_config(dma_chan);
 
@@ -137,9 +142,8 @@ void init_adc_dma(uint dma_chan) {
     irq_set_enabled(DMA_IRQ_0, true);
     adc_run(true);
 
-    
     dma_channel_configure(dma_chan, &cfg,
-        data_buffers[buffer_idx].buffer,    // dst
+        buffers[write_index],    // dst
         &adc_hw->fifo,  // src
         FFT_SIZE,       // transfer count
         true            // start immediately
@@ -148,7 +152,7 @@ void init_adc_dma(uint dma_chan) {
 
 void core1_send_samples(void) {
     while (true) {
-        uint8_t aux_index = buffer_idx;
+        uint8_t aux_index = read_index;
         for (uint8_t i = 0; i < N_DATA_BUFFERS; ++i) {
             if (data_buffers[aux_index].full) {
                 // Header para marcar el inicio del paquete
@@ -220,12 +224,25 @@ void send_freq_magnitude_pairs(float32_t *magnitudes, uint16_t size, uint32_t sa
     printf("]\n");
 }
 
+void send_magnitude_pairs(float32_t *magnitudes, uint16_t size) {
 
-void normalize_buffer(uint8_t *buffer, float32_t *normalized_buffer, int size) {
+    // Enviar datos crudos
+    putchar_raw(0xAA);
+    putchar_raw(0x55);
+    putchar_raw(0xAA);
+    putchar_raw(0x55);
+
+    // Enviar datos completos
+    fwrite(magnitudes, sizeof(float32_t), size, stdout);
+    fflush(stdout);
+}
+
+
+void normalize_buffer(uint8_t *buffer, float32_t *normalized_buffer, uint16_t size) {
     // Scale the buffer to center the 1.25V offset
     int8_t aux_val = 0;
     // Normalize the buffer to the range [-1.0, 1.0]
-    for (int i = 0; i < size; ++i) {
+    for (uint16_t i = 0; i < size; ++i) {
         aux_val = (int8_t) ((int16_t) buffer[i] - MIC_OFFSET);
         normalized_buffer[2 * i] = (float32_t) (aux_val / 128.0f);
         normalized_buffer[2 * i + 1] = 0.0f;    
