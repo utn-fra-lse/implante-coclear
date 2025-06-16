@@ -11,19 +11,16 @@
 
 // Channel 0 is GPIO26
 #define CAPTURE_CHANNEL 0
-#define ADC_CLK_KHZ 80
-#define ADC_CLK_DIV (48000 / ADC_CLK_KHZ)
-
+#define ADC_CLK_KHZ 40
 #define PIN_PWM_TEST1 2
 #define PIN_PWM_TEST2 4
 
 // The max9814 has a 1.25V offset and output of 2Vpp: (0.25, 2.25V)
-// Con 8 bits 1.23V * 255 / 3.3V = 95 
 #define MIC_OFFSET 128
 #define FFT_SIZE 1024
 #define SAMPLE_RATE ((uint32_t) (1000 * ADC_CLK_KHZ))
 
-#define N_DATA_BUFFERS 4
+#define N_DATA_BUFFERS 6
 
 struct capture_data {
     uint8_t *buffer;
@@ -40,9 +37,12 @@ uint dma_chan;
 void core1_fft();
 void core1_send_samples();
 
-void normalize_buffer(uint8_t *buffer, float32_t *normalized_buffer, int size);
-void send_freq_magnitude_pairs(float32_t *magnitudes, uint16_t size, uint32_t sample_rate);
+void normalize_buffer(uint8_t *buffer, float32_t *normalized_buffer, uint16_t size);
+void send_freq_magnitude_pairs(float *magnitudes, uint16_t size, uint32_t sample_rate);
+void send_magnitude_pairs(float32_t *magnitudes, uint16_t size);
 void init_adc_dma(uint dma_chan);
+
+void send_magnitude_packet(const float32_t *magnitudes, uint16_t size);
 
 
 void dma_irq0_handler(void) {
@@ -120,7 +120,7 @@ void init_adc_dma(uint dma_chan) {
 
     // It should be 0 or > 95, if 0 < div < 95 then div = 96
     // This is all timed by the 48 MHz ADC clock.
-    adc_set_clkdiv(ADC_CLK_DIV);
+    adc_set_clkdiv((float) 48000 / ADC_CLK_KHZ);
 
     dma_channel_config cfg = dma_channel_get_default_config(dma_chan);
 
@@ -171,9 +171,14 @@ void core1_send_samples(void) {
 
 
 void core1_fft() {
-    float32_t input_f32[FFT_SIZE * 2];
-    float32_t fft_output[FFT_SIZE * 2];
-    float32_t magnitudes[FFT_SIZE];
+    float32_t * input_f32  = (float32_t *)  malloc(FFT_SIZE * sizeof(float32_t));
+    float32_t * fft_output = (float32_t *)  malloc(FFT_SIZE * sizeof(float32_t));
+    float32_t * magnitudes = (float32_t *)  malloc((FFT_SIZE / 2) * sizeof(float32_t));
+    
+    if (!input_f32 || !fft_output || !magnitudes) {
+        printf("[CORE 1] Failed to allocate memory for FFT buffers\n");
+        return;
+    }
 
     // FFT instance
     arm_rfft_fast_instance_f32 fft_instance;
@@ -197,21 +202,34 @@ void core1_fft() {
         // Perform the real FFT
         arm_rfft_fast_f32(&fft_instance, input_f32, fft_output, 0);
     
-        // Compute magnitudes (only half spectrum is needed)
-        arm_cmplx_mag_f32(fft_output, magnitudes, FFT_SIZE);
+        // Compute magnitudes
+        arm_cmplx_mag_f32(fft_output, magnitudes, FFT_SIZE / 2);
     
         // Print first 20 FFT magnitudes
         printf("[CORE 1] First 20 FFT magnitudes at %.0f:\n", SAMPLE_RATE);
-        send_freq_magnitude_pairs(magnitudes, FFT_SIZE / 4, SAMPLE_RATE);
+        send_freq_magnitude_pairs(magnitudes, FFT_SIZE / 2, SAMPLE_RATE);
+        // send_magnitude_pairs(magnitudes, FFT_SIZE / 4);
+        // send_magnitude_packet(magnitudes, FFT_SIZE / 2);
     }
 }
 
 
-void send_freq_magnitude_pairs(float32_t *magnitudes, uint16_t size, uint32_t sample_rate) {
+void normalize_buffer(uint8_t *buffer, float32_t *normalized_buffer, uint16_t size) {
+    // Scale the buffer to center the 1.25V offset
+    int8_t aux_val = 0;
+    // Normalize the buffer to the range [-1.0, 1.0]
+    for (int i = 0; i < size; ++i) {
+        aux_val = (int8_t) ((int16_t) buffer[i] - MIC_OFFSET);
+        normalized_buffer[i] = (float32_t) (aux_val / 128.0f);
+    }
+}
+
+
+void send_freq_magnitude_pairs(float *magnitudes, uint16_t size, uint32_t sample_rate) {
     printf("[");  // start of JSON-like array or message
 
     for (uint16_t i = 0; i < size; ++i) {
-        float32_t freq = (2 * i) * ((float) sample_rate / FFT_SIZE);
+        float freq = i * ((float) sample_rate / FFT_SIZE);
         printf("%.1f:%.2f", freq, magnitudes[i]);
 
         if (i < size - 1)
@@ -221,13 +239,54 @@ void send_freq_magnitude_pairs(float32_t *magnitudes, uint16_t size, uint32_t sa
 }
 
 
-void normalize_buffer(uint8_t *buffer, float32_t *normalized_buffer, int size) {
-    // Scale the buffer to center the 1.25V offset
-    int8_t aux_val = 0;
-    // Normalize the buffer to the range [-1.0, 1.0]
-    for (int i = 0; i < size; ++i) {
-        aux_val = (int8_t) ((int16_t) buffer[i] - MIC_OFFSET);
-        normalized_buffer[2 * i] = (float32_t) (aux_val / 128.0f);
-        normalized_buffer[2 * i + 1] = 0.0f;    
+void send_magnitude_pairs(float32_t *magnitudes, uint16_t size) {
+
+    // Enviar datos crudos
+    putchar_raw(0xAA);
+    putchar_raw(0x55);
+    putchar_raw(0xAA);
+    putchar_raw(0x55);
+
+    // Enviar datos completos
+    fwrite(magnitudes, sizeof(float32_t), size, stdout);
+    fflush(stdout);
+}
+
+uint32_t calculate_crc32(const uint8_t *data, size_t length) {
+    uint32_t crc = 0xFFFFFFFF;
+    for (size_t i = 0; i < length; ++i) {
+        crc ^= data[i];
+        for (int j = 0; j < 8; ++j)
+            crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
     }
+    return ~crc;
+}
+
+void send_magnitude_packet(const float32_t *magnitudes, uint16_t size) {
+    // 1. Header
+    uint8_t header[] = { 0xAA, 0x55, 0xAA, 0x55 };
+    fwrite(header, sizeof(header), 1, stdout);
+
+    // 2. Payload size (in float32_t)
+    uint8_t size_bytes[2];
+    size_bytes[0] = size & 0xFF;
+    size_bytes[1] = (size >> 8) & 0xFF;
+    fwrite(size_bytes, sizeof(size_bytes), 1, stdout);
+
+    // 3. Payload (raw float32 data)
+    const uint8_t *data_bytes = (const uint8_t *)magnitudes;
+    fwrite(data_bytes, sizeof(float), size, stdout);
+    
+    // 4. CRC32 of the data
+    size_t data_length = size * sizeof(float);
+    uint32_t crc = calculate_crc32(data_bytes, data_length);
+    uint8_t crc_bytes[4] = {
+        (crc >> 0) & 0xFF,
+        (crc >> 8) & 0xFF,
+        (crc >> 16) & 0xFF,
+        (crc >> 24) & 0xFF,
+    };
+    fwrite(crc_bytes, sizeof(uint8_t), 4, stdout);
+
+    fflush(stdout);
 }

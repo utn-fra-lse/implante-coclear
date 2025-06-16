@@ -40,7 +40,7 @@ def setup_plot(ax: plt.Axes, freq: list, mag: list):
     ax.set_xlabel("Frequency (Hz)")
     ax.set_ylabel("Magnitude")
     ax.set_title("Real-Time FFT Magnitudes from Pico")
-
+    logger.info(f"Plotting: {len(freq)} frequency points.")
     bar_plot = ax.bar(freq, mag, width=freq[1] - freq[0], align='center')
     return bar_plot
 
