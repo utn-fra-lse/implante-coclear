@@ -13,16 +13,15 @@
 // Channel 0 is GPIO26
 #define CAPTURE_CHANNEL 0
 #define ADC_CLK_KHZ 32
+#define SAMPLE_RATE ((uint32_t) (1000 * ADC_CLK_KHZ))
 
 #define PIN_PWM_TEST1 2
 #define PIN_PWM_TEST2 4
 
 // The max9814 has a 1.25V offset and output of 2Vpp: (0.25, 2.25V)
 #define MIC_OFFSET 128.0f
-#define FFT_SIZE 1024
-#define SAMPLE_RATE ((uint32_t) (1000 * ADC_CLK_KHZ))
-
-#define N_DATA_BUFFERS 3
+#define N_DATA_BUFFERS 3U
+#define FFT_SIZE 1024U
 
 
 uint8_t * buffers[N_DATA_BUFFERS];
