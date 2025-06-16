@@ -9,7 +9,7 @@
 #include "utils.h"
 #include "arm_math.h"
 
-#define __MEASURE_FFT_TIME__
+// #define __MEASURE_FFT_TIME__
 // Channel 0 is GPIO26
 #define CAPTURE_CHANNEL 0
 #define ADC_CLK_KHZ 32
@@ -19,10 +19,10 @@
 
 // The max9814 has a 1.25V offset and output of 2Vpp: (0.25, 2.25V)
 #define MIC_OFFSET 128.0f
-#define FFT_SIZE 512
+#define FFT_SIZE 1024
 #define SAMPLE_RATE ((uint32_t) (1000 * ADC_CLK_KHZ))
 
-#define N_DATA_BUFFERS 8
+#define N_DATA_BUFFERS 3
 
 
 uint8_t * buffers[N_DATA_BUFFERS];
@@ -30,8 +30,8 @@ volatile uint8_t write_index = 0;
 volatile uint8_t read_index = 0;
 volatile bool adc_running = false;
 
-
 uint dma_chan;
+
 
 void core1_fft();
 void core1_send_samples();
@@ -42,7 +42,6 @@ void init_dma_with_irq(uint dma_chan);
 
 void send_freq_magnitude_pairs(float *magnitudes, uint16_t size, uint32_t sample_rate);
 void send_magnitude_pairs(float *magnitudes, uint16_t size);
-void send_magnitude_packet(const float32_t *magnitudes, uint16_t size);
 
 
 void dma_irq0_handler(void) {
@@ -187,7 +186,7 @@ void core1_fft() {
     
     while (true) {
         if(write_index == read_index && adc_running) {
-            sleep_ms(3); // Wait for data to be available
+            sleep_ms(1); // Wait for data to be available
             continue;
         }
         #ifdef __MEASURE_FFT_TIME__
@@ -203,9 +202,13 @@ void core1_fft() {
     
         // Print first 20 FFT magnitudes
         printf("[CORE 1] First 20 FFT magnitudes at %u:\n", SAMPLE_RATE);
-        // send_freq_magnitude_pairs(magnitudes, FFT_SIZE / 2, SAMPLE_RATE);
+        #ifdef __MEASURE_FFT_TIME__
+        int64_t elapsed_time = absolute_time_diff_us(start_time, get_absolute_time());
+        printf("Tiempo de procesamiento: %lld us\n", elapsed_time);
+        #else
+        send_freq_magnitude_pairs(magnitudes, FFT_SIZE / 2, SAMPLE_RATE);
         // send_magnitude_pairs(magnitudes, FFT_SIZE / 2);
-        // send_magnitude_packet(magnitudes, FFT_SIZE / 2);
+        #endif
         
         read_index = (read_index + 1) % N_DATA_BUFFERS;
         if (!adc_running) {
@@ -213,10 +216,6 @@ void core1_fft() {
             adc_run(true);
         }
         
-        #ifdef __MEASURE_FFT_TIME__
-        int64_t elapsed_time = absolute_time_diff_us(start_time, get_absolute_time());
-        printf("Tiempo de procesamiento: %lld us\n", elapsed_time);
-        #endif
     }
 }
 
@@ -252,44 +251,5 @@ void send_magnitude_pairs(float *magnitudes, uint16_t size) {
 
     // Enviar datos completos
     fwrite(magnitudes, sizeof(float), size, stdout);
-    fflush(stdout);
-}
-
-uint32_t calculate_crc32(const uint8_t *data, size_t length) {
-    uint32_t crc = 0xFFFFFFFF;
-    for (size_t i = 0; i < length; ++i) {
-        crc ^= data[i];
-        for (int j = 0; j < 8; ++j)
-            crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
-    }
-    return ~crc;
-}
-
-void send_magnitude_packet(const float32_t *magnitudes, uint16_t size) {
-    // 1. Header
-    uint8_t header[] = { 0xAA, 0x55, 0xAA, 0x55 };
-    fwrite(header, sizeof(header), 1, stdout);
-
-    // 2. Payload size (in float32_t)
-    uint8_t size_bytes[2];
-    size_bytes[0] = size & 0xFF;
-    size_bytes[1] = (size >> 8) & 0xFF;
-    fwrite(size_bytes, sizeof(size_bytes), 1, stdout);
-
-    // 3. Payload (raw float32 data)
-    const uint8_t *data_bytes = (const uint8_t *)magnitudes;
-    fwrite(data_bytes, sizeof(float), size, stdout);
-    
-    // 4. CRC32 of the data
-    size_t data_length = size * sizeof(float);
-    uint32_t crc = calculate_crc32(data_bytes, data_length);
-    uint8_t crc_bytes[4] = {
-        (crc >> 0) & 0xFF,
-        (crc >> 8) & 0xFF,
-        (crc >> 16) & 0xFF,
-        (crc >> 24) & 0xFF,
-    };
-    fwrite(crc_bytes, sizeof(uint8_t), 4, stdout);
-
     fflush(stdout);
 }
