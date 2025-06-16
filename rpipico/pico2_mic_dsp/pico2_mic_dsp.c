@@ -9,26 +9,26 @@
 #include "utils.h"
 #include "arm_math.h"
 
+#define __MEASURE_FFT_TIME__
 // Channel 0 is GPIO26
 #define CAPTURE_CHANNEL 0
-#define ADC_CLK_KHZ 80
+#define ADC_CLK_KHZ 32
 
 #define PIN_PWM_TEST1 2
 #define PIN_PWM_TEST2 4
 
 // The max9814 has a 1.25V offset and output of 2Vpp: (0.25, 2.25V)
-// Con 8 bits 1.23V * 255 / 3.3V = 95 
-#define MIC_OFFSET 128
-#define FFT_SIZE 1024
+#define MIC_OFFSET 128.0f
+#define FFT_SIZE 512
 #define SAMPLE_RATE ((uint32_t) (1000 * ADC_CLK_KHZ))
 
-#define N_DATA_BUFFERS 5
+#define N_DATA_BUFFERS 8
 
 
 uint8_t * buffers[N_DATA_BUFFERS];
 volatile uint8_t write_index = 0;
 volatile uint8_t read_index = 0;
-volatile bool adc_running = 0;
+volatile bool adc_running = false;
 
 
 uint dma_chan;
@@ -37,9 +37,13 @@ void core1_fft();
 void core1_send_samples();
 
 void normalize_buffer(uint8_t *buffer, float32_t *normalized_buffer, uint16_t size);
-void send_freq_magnitude_pairs(float32_t *magnitudes, uint16_t size, uint32_t sample_rate);
 void init_adc_clkdiv(uint16_t adc_clk_khz);
 void init_dma_with_irq(uint dma_chan);
+
+void send_freq_magnitude_pairs(float *magnitudes, uint16_t size, uint32_t sample_rate);
+void send_magnitude_pairs(float *magnitudes, uint16_t size);
+void send_magnitude_packet(const float32_t *magnitudes, uint16_t size);
+
 
 void dma_irq0_handler(void) {
     // Clear the interrupt
@@ -67,13 +71,12 @@ int main()
     
     
     for (uint8_t i = 0; i < N_DATA_BUFFERS; ++i) {
-        uint8_t * aux_ptr = (uint8_t *) malloc(FFT_SIZE * sizeof(uint8_t));
+        buffers[i] = (uint8_t *) malloc(FFT_SIZE * sizeof(uint8_t));
 
-        if (!aux_ptr) {
+        if (!buffers[i]) {
             printf("[CORE 0] Failed to allocate memory for buffer %d\n", i);
             return -1;
         }
-        buffers[i] = aux_ptr;
     }
 
     printf("[CORE 0] Config DMA\n");
@@ -88,14 +91,8 @@ int main()
     
     while(true) {
 
-        if (write_index == read_index) {
-            printf("[CORE 0] All buffers full\n");
-            gpio_put(PICO_DEFAULT_LED_PIN, 1);
-        }
-        else {
-            gpio_put(PICO_DEFAULT_LED_PIN, 0);
-        }
-        sleep_ms(50);
+        // gpio_put(PICO_DEFAULT_LED_PIN, write_index == read_index);
+        sleep_ms(1000);
     }
 }
 
@@ -116,12 +113,10 @@ void init_adc_clkdiv(uint16_t adc_clk_khz) {
     
     // It should be 0 or > 95, if 0 < div < 95 then div = 96
     // This is all timed by the 48 MHz ADC clock.
-    adc_set_clkdiv(48000.0 / adc_clk_khz);
-
+    adc_set_clkdiv((float) 48000 / ADC_CLK_KHZ);
 }
 
 void init_dma_with_irq(uint dma_chan) {
-
     dma_channel_config cfg = dma_channel_get_default_config(dma_chan);
 
     // Reading from constant address, writing to incrementing byte addresses
@@ -149,7 +144,7 @@ void init_dma_with_irq(uint dma_chan) {
 void core1_send_samples(void) {
     while (true) {
         if(write_index == read_index && adc_running) {
-            sleep_ms(10); // Wait for data to be available
+            sleep_ms(5); // Wait for data to be available
             continue;
         }
 
@@ -171,9 +166,14 @@ void core1_send_samples(void) {
 
 
 void core1_fft() {
-    float32_t input_f32[FFT_SIZE * 2];
-    float32_t fft_output[FFT_SIZE * 2];
-    float32_t magnitudes[FFT_SIZE];
+    float32_t * input_f32  = (float32_t *)  malloc(FFT_SIZE * sizeof(float32_t));
+    float32_t * fft_output = (float32_t *)  malloc(FFT_SIZE * sizeof(float32_t));
+    float32_t * magnitudes = (float32_t *)  malloc((FFT_SIZE / 2) * sizeof(float32_t));
+    
+    if (!input_f32 || !fft_output || !magnitudes) {
+        printf("[CORE 1] Failed to allocate memory for FFT buffers\n");
+        return;
+    }
 
     // FFT instance
     arm_rfft_fast_instance_f32 fft_instance;
@@ -184,39 +184,56 @@ void core1_fft() {
         sleep_ms(1000);
         status = arm_rfft_fast_init_f32(&fft_instance, FFT_SIZE);
     }
-
+    
     while (true) {
         if(write_index == read_index && adc_running) {
-            sleep_ms(100); // Wait for data to be available
+            sleep_ms(3); // Wait for data to be available
             continue;
         }
-
+        #ifdef __MEASURE_FFT_TIME__
+        absolute_time_t start_time = get_absolute_time();
+        #endif
         // Normalize the buffer to [-1.0, 1.0] range
         normalize_buffer(buffers[read_index], input_f32, FFT_SIZE);
         // Perform the real FFT
         arm_rfft_fast_f32(&fft_instance, input_f32, fft_output, 0);
     
-        // Compute magnitudes (only half spectrum is needed)
-        arm_cmplx_mag_f32(fft_output, magnitudes, FFT_SIZE);
+        // Compute magnitudes
+        arm_cmplx_mag_f32(fft_output, magnitudes, FFT_SIZE / 2);
     
         // Print first 20 FFT magnitudes
-        printf("[CORE 1] First 20 FFT magnitudes at %.0f:\n", SAMPLE_RATE);
-        send_freq_magnitude_pairs(magnitudes, FFT_SIZE / 2, SAMPLE_RATE);
-
+        printf("[CORE 1] First 20 FFT magnitudes at %u:\n", SAMPLE_RATE);
+        // send_freq_magnitude_pairs(magnitudes, FFT_SIZE / 2, SAMPLE_RATE);
+        // send_magnitude_pairs(magnitudes, FFT_SIZE / 2);
+        // send_magnitude_packet(magnitudes, FFT_SIZE / 2);
+        
         read_index = (read_index + 1) % N_DATA_BUFFERS;
         if (!adc_running) {
             adc_running = true;
             adc_run(true);
         }
+        
+        #ifdef __MEASURE_FFT_TIME__
+        int64_t elapsed_time = absolute_time_diff_us(start_time, get_absolute_time());
+        printf("Tiempo de procesamiento: %lld us\n", elapsed_time);
+        #endif
     }
 }
 
 
-void send_freq_magnitude_pairs(float32_t *magnitudes, uint16_t size, uint32_t sample_rate) {
+void normalize_buffer(uint8_t *buffer, float32_t *normalized_buffer, uint16_t size) {
+    // Normalize the buffer to the range [-1.0, 1.0]
+    for (uint16_t i = 0; i < size; ++i) {
+        normalized_buffer[i] = ((float32_t) buffer[i] - MIC_OFFSET) / 128.0f;
+    }
+}
+
+
+void send_freq_magnitude_pairs(float *magnitudes, uint16_t size, uint32_t sample_rate) {
     printf("[");  // start of JSON-like array or message
 
     for (uint16_t i = 0; i < size; ++i) {
-        float32_t freq = (2 * i) * ((float) sample_rate / FFT_SIZE);
+        float freq = i * ((float) sample_rate / FFT_SIZE);
         printf("%.1f:%.2f", freq, magnitudes[i]);
 
         if (i < size - 1)
@@ -225,7 +242,7 @@ void send_freq_magnitude_pairs(float32_t *magnitudes, uint16_t size, uint32_t sa
     printf("]\n");
 }
 
-void send_magnitude_pairs(float32_t *magnitudes, uint16_t size) {
+void send_magnitude_pairs(float *magnitudes, uint16_t size) {
 
     // Enviar datos crudos
     putchar_raw(0xAA);
@@ -234,18 +251,45 @@ void send_magnitude_pairs(float32_t *magnitudes, uint16_t size) {
     putchar_raw(0x55);
 
     // Enviar datos completos
-    fwrite(magnitudes, sizeof(float32_t), size, stdout);
+    fwrite(magnitudes, sizeof(float), size, stdout);
     fflush(stdout);
 }
 
-
-void normalize_buffer(uint8_t *buffer, float32_t *normalized_buffer, uint16_t size) {
-    // Scale the buffer to center the 1.25V offset
-    int8_t aux_val = 0;
-    // Normalize the buffer to the range [-1.0, 1.0]
-    for (uint16_t i = 0; i < size; ++i) {
-        aux_val = (int8_t) ((int16_t) buffer[i] - MIC_OFFSET);
-        normalized_buffer[2 * i] = (float32_t) (aux_val / 128.0f);
-        normalized_buffer[2 * i + 1] = 0.0f;    
+uint32_t calculate_crc32(const uint8_t *data, size_t length) {
+    uint32_t crc = 0xFFFFFFFF;
+    for (size_t i = 0; i < length; ++i) {
+        crc ^= data[i];
+        for (int j = 0; j < 8; ++j)
+            crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
     }
+    return ~crc;
+}
+
+void send_magnitude_packet(const float32_t *magnitudes, uint16_t size) {
+    // 1. Header
+    uint8_t header[] = { 0xAA, 0x55, 0xAA, 0x55 };
+    fwrite(header, sizeof(header), 1, stdout);
+
+    // 2. Payload size (in float32_t)
+    uint8_t size_bytes[2];
+    size_bytes[0] = size & 0xFF;
+    size_bytes[1] = (size >> 8) & 0xFF;
+    fwrite(size_bytes, sizeof(size_bytes), 1, stdout);
+
+    // 3. Payload (raw float32 data)
+    const uint8_t *data_bytes = (const uint8_t *)magnitudes;
+    fwrite(data_bytes, sizeof(float), size, stdout);
+    
+    // 4. CRC32 of the data
+    size_t data_length = size * sizeof(float);
+    uint32_t crc = calculate_crc32(data_bytes, data_length);
+    uint8_t crc_bytes[4] = {
+        (crc >> 0) & 0xFF,
+        (crc >> 8) & 0xFF,
+        (crc >> 16) & 0xFF,
+        (crc >> 24) & 0xFF,
+    };
+    fwrite(crc_bytes, sizeof(uint8_t), 4, stdout);
+
+    fflush(stdout);
 }
