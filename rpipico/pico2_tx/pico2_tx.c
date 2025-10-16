@@ -12,26 +12,22 @@
 #define WRAP    75
 
 /**
- * @brief Cantidad de microsegundos de ancho de pulso
+ * @enum cycles
+ * @brief Cantidad de ciclos para cada bit de la trama
  */
-typedef enum {
-    DUTY_BIT_ZERO = (uint16_t) (0.5 * WRAP),
-    DUTY_NO_BIT = (uint16_t) (0.5 * WRAP),
-    DUTY_BIT_ONE = (uint16_t) (0.5 * WRAP)
-} duty_us_t;
-
-typedef enum {
+typedef enum cycles {
     CYCLES_BIT_ZERO = 6,
     CYCLES_NO_BIT = 9,
     CYCLES_BIT_ONE = 12
 } cycles_t;
 
 /**
- * Estructura de control para la trama de datos
+ * @struct duty_control
+ * @brief Estructura de control para la trama de datos
  */
-typedef struct {
-    cycles_t cycles;    // Cantidad de ciclos
-    bool next_bit;      // Booleano para habilitar el siguiente bit
+typedef struct duty_control {
+    cycles_t cycles;    /**< Cantidad de ciclos */
+    bool next_bit;      /**< Booleano para habilitar el siguiente bit */
 } duty_control_t;
 
 // Numero de slice de PWM
@@ -78,7 +74,7 @@ int main(void) {
     irq_set_enabled(PWM_DEFAULT_IRQ_NUM(), true);
     // Arranca a actuar el PWM
     pwm_init(slice, &config, true);
-    pwm_set_gpio_level(TX_GPIO, DUTY_NO_BIT);
+    pwm_set_gpio_level(TX_GPIO, WRAP / 2);
 
 #ifdef TRIG_GPIO
     // GPIO para ayudar al trigger del osciloscopio
