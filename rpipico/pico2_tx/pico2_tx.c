@@ -8,7 +8,7 @@
 #define TX_GPIO     26
 // GPIO para trigger
 #define TRIG_GPIO   16
-// Wrap para PWM (1000 ciclos de clock para 125KHz a partir de 125MHz)
+// Wrap para PWM (75 ciclos de clock para 2 MHz a partir de 150 MHz)
 #define WRAP    75
 
 /**
@@ -30,23 +30,27 @@ typedef enum {
  * Estructura de control para la trama de datos
  */
 typedef struct {
-    uint16_t duty;  // Marca para el ancho de pulso
-    bool next_bit;  // Booleano para habilitar el siguiente bit
-    cycles_t cycles;// Cantidad de ciclos
+    cycles_t cycles;    // Cantidad de ciclos
+    bool next_bit;      // Booleano para habilitar el siguiente bit
 } duty_control_t;
 
 // Numero de slice de PWM
 uint32_t slice;
 // Estructura de control para la trama de datos
-volatile duty_control_t control = { .duty = DUTY_NO_BIT, .next_bit = false };
+volatile duty_control_t control = { .cycles = CYCLES_NO_BIT, .next_bit = false };
 
 /**
  * @brief Interrupcion de wrap de PWM
  */
 void on_wrap(void) {
+    // Cantidad de pulsos
+    static uint8_t pulse_cnt = 0;
     // Limpio flag
     pwm_clear_irq(slice);
-    // Cambio el duty cicle y destrabo main
+    // Actualizo ancho de pulso de acuerdo al numero de pulso
+    if((pulse_cnt++ % 16) < control.cycles) { pwm_set_gpio_level(TX_GPIO, WRAP / 2); }
+    else { pwm_set_gpio_level(TX_GPIO, 0); }
+    // Avisa al programa principal
     control.next_bit = true;
 }
 
@@ -54,7 +58,7 @@ void on_wrap(void) {
  * @brief Programa principal
  */
 int main(void) {
-    // Clock del sistema en 100MHz
+    // Clock del sistema en 150 MHz
     set_sys_clock_khz(150000, true);
     stdio_init_all();
 
@@ -83,58 +87,36 @@ int main(void) {
     gpio_put(TRIG_GPIO, false);
 #endif
 
+    uint8_t bit_index = 0;
+
     while(1) {
-    	// Trama de datos de prueba
-    	data = test_data[test_data_index];
 
-    #ifdef TRIG_GPIO
-        gpio_put(TRIG_GPIO, true);
-    #endif
-    	// Analizo bit a bit y cambio el PWM        
-    	for(uint8_t i = 0; i < 16; i++) {
-            // Asigno el ancho de pulso segun si es 1 o 0
-    		control.duty = (data & (1 << (15 - i)))? DUTY_BIT_ONE : DUTY_BIT_ZERO;
-            control.cycles = (data & (1 << (15 - i)))? CYCLES_BIT_ONE : CYCLES_BIT_ZERO;
-            uint8_t cycles = (uint8_t) control.cycles;
-            
-            for(uint16_t i = 0; i < 16; i++) {
-
-                if(i < control.cycles) {
-                    pwm_set_gpio_level(TX_GPIO, control.duty);
-                }
-                else {
-                    pwm_set_gpio_level(TX_GPIO, 0);
-                }
-                control.next_bit = false;
-                // Espero a que este lista la interrupcion
-                while(!control.next_bit);
-            }
-    	}
-    
-    #ifdef TRIG_GPIO
-        gpio_put(TRIG_GPIO, false);
-    #endif
-    
-        // Fin de trama
-        control.duty = DUTY_NO_BIT;
-        control.cycles = CYCLES_NO_BIT;
-        uint8_t cycles = (uint8_t) control.cycles;
-
-        for(uint16_t i = 0; i < 16; i++) {
-
-            if(i < control.cycles) {
-                pwm_set_gpio_level(TX_GPIO, control.duty);
-            }
-            else {
-                pwm_set_gpio_level(TX_GPIO, 0);
-            }
-            control.next_bit = false;
-            // Espero a que este lista la interrupcion
-            while(!control.next_bit);
+        if(bit_index == 0) {
+            // Inicio de trama
+        #ifdef TRIG_GPIO
+            gpio_put(TRIG_GPIO, true);
+        #endif
+            // Trama de datos de prueba
+    	    data = test_data[test_data_index];
         }
-        
-        // Iteración de datos
-        test_data_index = (test_data_index + 1) % 4;
+        else if(bit_index == 16) {
+            // Fin de trama
+            #ifdef TRIG_GPIO
+                gpio_put(TRIG_GPIO, false);
+            #endif
+            // Iteración de datos
+            test_data_index = (test_data_index + 1) % 4;
+        }
+    
+        if(control.next_bit) {
+            // Asigno la cantidad de pulsos segun si es 1 o 0
+            control.cycles = (data & (1 << (15 - bit_index)))? CYCLES_BIT_ONE : CYCLES_BIT_ZERO;
+            // Limpio flag de interrupción
+            control.next_bit = false;
+            // Siguiente bit
+            bit_index = (bit_index + 1) % 16;
+        }
+
     }
     return 0;
 }
