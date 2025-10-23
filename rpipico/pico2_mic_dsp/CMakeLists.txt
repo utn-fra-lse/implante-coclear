@@ -56,9 +56,6 @@ pico_enable_stdio_usb(pico2_mic_dsp 1)
 
 
 add_subdirectory(
-    ${CMAKE_CURRENT_LIST_DIR}/../CMSIS_lib ${CMAKE_BINARY_DIR}/CMSIS_lib
-)
-add_subdirectory(
     ${CMAKE_CURRENT_LIST_DIR}/../utils ${CMAKE_BINARY_DIR}/utils
 )
 
@@ -69,7 +66,6 @@ target_link_libraries(pico2_mic_dsp
     hardware_dma
     hardware_pwm
     pico_multicore
-    cmsis_lib
     utils
 )
 
@@ -81,3 +77,8 @@ target_include_directories(pico2_mic_dsp PRIVATE
 
 # Generate UF2 and other outputs
 pico_add_extra_outputs(pico2_mic_dsp)
+
+
+add_subdirectory(dsp)
+add_subdirectory(trama)
+target_link_libraries(${PROJECT_NAME} dsp trama)

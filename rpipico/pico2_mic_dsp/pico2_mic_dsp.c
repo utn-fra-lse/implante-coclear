@@ -2,26 +2,26 @@
 #include <stdlib.h>
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
+#include "pico/util/queue.h"
 #include "hardware/adc.h"
 #include "hardware/dma.h"
 #include "hardware/pwm.h"
 
 #include "utils.h"
 #include "arm_math.h"
+#include "dsp.h"
+#include "trama.h"
+
+queue_t queue;
 
 // #define __MEASURE_FFT_TIME__
 // Channel 0 is GPIO26
 #define CAPTURE_CHANNEL 0
-#define ADC_CLK_KHZ 32
-#define SAMPLE_RATE ((uint32_t) (1000 * ADC_CLK_KHZ))
 
 #define PIN_PWM_TEST1 2
 #define PIN_PWM_TEST2 4
 
-// The max9814 has a 1.25V offset and output of 2Vpp: (0.25, 2.25V)
-#define MIC_OFFSET 128.0f
 #define N_DATA_BUFFERS 3U
-#define FFT_SIZE 1024U
 
 
 uint8_t * buffers[N_DATA_BUFFERS];
@@ -31,16 +31,10 @@ volatile bool adc_running = false;
 
 uint dma_chan;
 
-
 void core1_fft();
 void core1_send_samples();
-
-void normalize_buffer(uint8_t *buffer, float32_t *normalized_buffer, uint16_t size);
 void init_adc_clkdiv(uint16_t adc_clk_khz);
 void init_dma_with_irq(uint dma_chan);
-
-void send_freq_magnitude_pairs(float *magnitudes, uint16_t size, uint32_t sample_rate);
-void send_magnitude_pairs(float *magnitudes, uint16_t size);
 
 
 void dma_irq0_handler(void) {
@@ -79,18 +73,59 @@ int main()
 
     printf("[CORE 0] Config DMA\n");
     // Set up the DMA to start transferring data as soon as it appears in FIFO
-    init_adc_clkdiv((uint16_t) ADC_CLK_KHZ);
+    init_adc_clkdiv((uint16_t) (ADC_CLK_HZ / 1000));
     dma_chan = dma_claim_unused_channel(true);
     init_dma_with_irq(dma_chan);
     
     // Start core1
     multicore_launch_core1(core1_fft);
     // multicore_launch_core1(core1_send_samples);
-    
-    while(true) {
+    queue_init(&queue, sizeof(uint16_t *), 1);
+    uint16_t *trama_data = NULL;
+    uint8_t bit_index = 0;
 
-        // gpio_put(PICO_DEFAULT_LED_PIN, write_index == read_index);
-        sleep_ms(1000);
+#ifdef TRIG_GPIO
+    // GPIO para ayudar al trigger del osciloscopio
+    gpio_init(TRIG_GPIO);
+    gpio_set_dir(TRIG_GPIO, true);
+    gpio_put(TRIG_GPIO, false);
+#endif
+
+    while(true) {
+    
+        if(queue_try_remove(&queue, (void *) trama_data)) {
+            for(uint32_t i = 0; i < N_FILTERS; i++) {
+                trama_b_generate(i, trama_data[i]);
+            }
+        }
+
+
+        // if(bit_index == 0) {
+        //     // Inicio de trama
+        // #ifdef TRIG_GPIO
+        //     gpio_put(TRIG_GPIO, true);
+        // #endif
+
+        // }
+        // else if(bit_index == 16) {
+        //     // Fin de trama
+        //     #ifdef TRIG_GPIO
+        //         gpio_put(TRIG_GPIO, false);
+        //     #endif
+        //     // Iteración de datos
+        //     test_data_index = (test_data_index + 1) % 4;
+        // }
+    
+        // if(control.next_bit) {
+        //     // Asigno la cantidad de pulsos segun si es 1 o 0
+        //     control.cycles = (data & (1 << (15 - bit_index)))? CYCLES_BIT_ONE : CYCLES_BIT_ZERO;
+        //     // Limpio flag de interrupción
+        //     control.next_bit = false;
+        //     // Siguiente bit
+        //     bit_index = (bit_index + 1) % 16;
+        // }        
+
+        sleep_ms(5);
     }
 }
 
@@ -111,7 +146,7 @@ void init_adc_clkdiv(uint16_t adc_clk_khz) {
     
     // It should be 0 or > 95, if 0 < div < 95 then div = 96
     // This is all timed by the 48 MHz ADC clock.
-    adc_set_clkdiv((float) 48000 / ADC_CLK_KHZ);
+    adc_set_clkdiv(48000.0f / (float) (adc_clk_khz));
 }
 
 void init_dma_with_irq(uint dma_chan) {
@@ -139,34 +174,14 @@ void init_dma_with_irq(uint dma_chan) {
     );
 }
 
-void core1_send_samples(void) {
-    while (true) {
-        if(write_index == read_index && adc_running) {
-            sleep_ms(5); // Wait for data to be available
-            continue;
-        }
-
-        // Header para marcar el inicio del paquete
-        putchar_raw(0xAA);
-        putchar_raw(0x55);
-
-        // Enviar datos crudos
-        fwrite(buffers[read_index], sizeof(uint8_t), FFT_SIZE, stdout);
-        fflush(stdout);
-
-        read_index = (read_index + 1) % N_DATA_BUFFERS;
-        if (!adc_running) {
-            adc_running = true;
-            adc_run(true);
-        }
-    }
-}
 
 
 void core1_fft() {
     float32_t * input_f32  = (float32_t *)  malloc(FFT_SIZE * sizeof(float32_t));
     float32_t * fft_output = (float32_t *)  malloc(FFT_SIZE * sizeof(float32_t));
     float32_t * magnitudes = (float32_t *)  malloc((FFT_SIZE / 2) * sizeof(float32_t));
+
+    uint16_t out_data[N_FILTERS];
     
     if (!input_f32 || !fft_output || !magnitudes) {
         printf("[CORE 1] Failed to allocate memory for FFT buffers\n");
@@ -192,7 +207,7 @@ void core1_fft() {
         absolute_time_t start_time = get_absolute_time();
         #endif
         // Normalize the buffer to [-1.0, 1.0] range
-        normalize_buffer(buffers[read_index], input_f32, FFT_SIZE);
+        dsp_normalize_buffer(buffers[read_index], input_f32, FFT_SIZE);
         // Perform the real FFT
         arm_rfft_fast_f32(&fft_instance, input_f32, fft_output, 0);
     
@@ -200,15 +215,17 @@ void core1_fft() {
         arm_cmplx_mag_f32(fft_output, magnitudes, FFT_SIZE / 2);
     
         // Print first 20 FFT magnitudes
-        printf("[CORE 1] First 20 FFT magnitudes at %u:\n", SAMPLE_RATE);
+        printf("[CORE 1] First 20 FFT magnitudes at %u:\n", ADC_CLK_HZ);
         #ifdef __MEASURE_FFT_TIME__
         int64_t elapsed_time = absolute_time_diff_us(start_time, get_absolute_time());
         printf("Tiempo de procesamiento: %lld us\n", elapsed_time);
         #else
-        send_freq_magnitude_pairs(magnitudes, FFT_SIZE / 2, SAMPLE_RATE);
-        // send_magnitude_pairs(magnitudes, FFT_SIZE / 2);
+        send_freqs_magnitude(magnitudes, FFT_SIZE / SAMPLE_MULTIPLIER, (uint16_t) (ADC_CLK_HZ / FFT_SIZE));
+        // send_fft_data_binary(magnitudes, FFT_SIZE / 2);
         #endif
-        
+
+        dsp_compute_estimulos(magnitudes, out_data);
+        queue_try_add(&queue, (void *) out_data);
         read_index = (read_index + 1) % N_DATA_BUFFERS;
         if (!adc_running) {
             adc_running = true;
@@ -219,36 +236,25 @@ void core1_fft() {
 }
 
 
-void normalize_buffer(uint8_t *buffer, float32_t *normalized_buffer, uint16_t size) {
-    // Normalize the buffer to the range [-1.0, 1.0]
-    for (uint16_t i = 0; i < size; ++i) {
-        normalized_buffer[i] = ((float32_t) buffer[i] - MIC_OFFSET) / 128.0f;
+void core1_send_samples(void) {
+    while (true) {
+        if(write_index == read_index && adc_running) {
+            sleep_ms(5); // Wait for data to be available
+            continue;
+        }
+
+        // Header para marcar el inicio del paquete
+        putchar_raw(0xAA);
+        putchar_raw(0x55);
+
+        // Enviar datos crudos
+        fwrite(buffers[read_index], sizeof(uint8_t), FFT_SIZE, stdout);
+        fflush(stdout);
+
+        read_index = (read_index + 1) % N_DATA_BUFFERS;
+        if (!adc_running) {
+            adc_running = true;
+            adc_run(true);
+        }
     }
-}
-
-
-void send_freq_magnitude_pairs(float *magnitudes, uint16_t size, uint32_t sample_rate) {
-    printf("[");  // start of JSON-like array or message
-
-    for (uint16_t i = 0; i < size; ++i) {
-        float freq = i * ((float) sample_rate / FFT_SIZE);
-        printf("%.1f:%.2f", freq, magnitudes[i]);
-
-        if (i < size - 1)
-            printf(",");
-    }
-    printf("]\n");
-}
-
-void send_magnitude_pairs(float *magnitudes, uint16_t size) {
-
-    // Enviar datos crudos
-    putchar_raw(0xAA);
-    putchar_raw(0x55);
-    putchar_raw(0xAA);
-    putchar_raw(0x55);
-
-    // Enviar datos completos
-    fwrite(magnitudes, sizeof(float), size, stdout);
-    fflush(stdout);
 }
