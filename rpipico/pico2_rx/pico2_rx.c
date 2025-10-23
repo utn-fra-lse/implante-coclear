@@ -9,6 +9,7 @@
 // Optimizacion baja para que no se ignoren las variables en el debugger
 #pragma GCC optimize("O0")
 
+
 // GPIO para usar de entrada de datos
 #define RX_GPIO     16
 
