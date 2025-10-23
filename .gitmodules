@@ -3,4 +3,4 @@
 	url = https://github.com/ARM-software/CMSIS-DSP.git
 [submodule "rpipico/CMSIS_lib/CMSIS"]
 	path = rpipico/CMSIS_lib/CMSIS
-	url = git@github.com:ARM-software/CMSIS_6.git
+	url = https://github.com/ARM-software/CMSIS_6.git
