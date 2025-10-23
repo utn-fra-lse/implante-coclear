@@ -30,14 +30,14 @@ void generate_sample_buffer(uint8_t *buffer, uint16_t size, uint32_t sample_rate
 }
 
 
-void send_freqs_magnitude(float *magnitudes, uint16_t size, uint32_t sample_rate) {
-    printf("[");  // start of JSON-like array or message
-    float freq_resolution = 2 * ((float) sample_rate / size);
+void send_freqs_magnitude(float *magnitudes, uint16_t size, uint16_t freq_bin_width) {
+    // start of JSON-like array or message
+    printf("[\n");
     for (uint16_t i = 0; i < size; ++i) {
-        printf("%.1f:%.2f", i * freq_resolution, magnitudes[i]);
+        printf("%d:%.2f\n", i * freq_bin_width, magnitudes[i]);
 
-        if (i < size - 1)
-            printf(",");
+        // if (i < size - 1)
+        //     printf(",");
     }
     printf("]\n");
 }
