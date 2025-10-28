@@ -11,6 +11,9 @@
 #include "arm_math.h"
 #include "dsp.h"
 #include "trama.h"
+#include "pio_tx.h"
+
+#define PICO_DEFAULT_LED_PIN    10
 
 queue_t queue;
 
@@ -18,11 +21,12 @@ queue_t queue;
 // Channel 0 is GPIO26
 #define CAPTURE_CHANNEL 0
 
-#define PIN_PWM_TEST1 2
+#define PIN_PWM_TEST1 28
 #define PIN_PWM_TEST2 4
 
 #define N_DATA_BUFFERS 3U
 
+#define TX_GPIO 27
 
 uint8_t * buffers[N_DATA_BUFFERS];
 volatile uint8_t write_index = 0;
@@ -58,7 +62,7 @@ int main()
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
     gpio_put(PICO_DEFAULT_LED_PIN, 0);
-    // init_pwm_test(PIN_PWM_TEST1, 3000);
+    init_pwm_test(PIN_PWM_TEST1, 500);
     // init_pwm_test(PIN_PWM_TEST2, 6000);
     
     
@@ -91,41 +95,24 @@ int main()
     gpio_put(TRIG_GPIO, false);
 #endif
 
+    // Habilito transmisor por PIO
+    pio_tx_init(TX_GPIO);
+
     while(true) {
     
-        if(queue_try_remove(&queue, (void *) trama_data)) {
-            for(uint32_t i = 0; i < N_FILTERS; i++) {
-                trama_b_generate(i, trama_data[i]);
+        if(!queue_try_remove(&queue, (void *) trama_data)) {
+            continue;
+        }
+        for(uint32_t i = 0; i < N_FILTERS; i++) {
+            uint16_t data = trama_b_generate(i, trama_data[i]);
+            printf("%02d: 0x%04x\n", i, data);
+            for(uint32_t j = 0; j < 16; j++) {
+                // Asigno la cantidad de pulsos segun si es 1 o 0
+                pio_tx_start(data & (1 << (15 - j)));
+                while(!pio_tx_is_done());
             }
         }
-
-
-        // if(bit_index == 0) {
-        //     // Inicio de trama
-        // #ifdef TRIG_GPIO
-        //     gpio_put(TRIG_GPIO, true);
-        // #endif
-
-        // }
-        // else if(bit_index == 16) {
-        //     // Fin de trama
-        //     #ifdef TRIG_GPIO
-        //         gpio_put(TRIG_GPIO, false);
-        //     #endif
-        //     // Iteración de datos
-        //     test_data_index = (test_data_index + 1) % 4;
-        // }
-    
-        // if(control.next_bit) {
-        //     // Asigno la cantidad de pulsos segun si es 1 o 0
-        //     control.cycles = (data & (1 << (15 - bit_index)))? CYCLES_BIT_ONE : CYCLES_BIT_ZERO;
-        //     // Limpio flag de interrupción
-        //     control.next_bit = false;
-        //     // Siguiente bit
-        //     bit_index = (bit_index + 1) % 16;
-        // }        
-
-        sleep_ms(5);
+        puts("");
     }
 }
 
