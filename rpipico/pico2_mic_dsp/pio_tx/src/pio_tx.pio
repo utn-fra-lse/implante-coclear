@@ -1,0 +1,24 @@
+.program pio_tx
+
+main_loop:
+    pull block          ; Espera la cantidad de ciclos con pulso
+    mov x, osr          ; Copia OSR a X
+    pull block          ; Espera la cantidad de ciclos con la linea baja
+    mov y, osr          ; Copia OSR a Y
+    irq set 0           ; Disparo interrupcion para CPU (una vez cada 32 pulsos / 8 us)
+
+start_loop:
+    jmp x-- start_pulse ; Otro pulso hasta agotar X
+
+low_state_loop:
+    jmp y-- low_state_nop   ; Cantidad de pulsos restantes en estado bajo
+    jmp main_loop [13]      ; Hago tiempo en el ultimo ciclo en estado bajo y vuelvo a arrancar
+
+low_state_nop:
+    nop [17]                ; Hago tiempo en cada ciclo en estado bajo
+    jmp low_state_loop      ; Siguiente ciclo bajo
+
+start_pulse:
+    set pins 1 [9]      ; Pulso en alto por medio ciclo
+    set pins 0 [7]      ; Pulso en bajo por medio ciclo
+    jmp start_loop
