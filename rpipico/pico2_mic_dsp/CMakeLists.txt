@@ -81,4 +81,5 @@ pico_add_extra_outputs(pico2_mic_dsp)
 
 add_subdirectory(dsp)
 add_subdirectory(trama)
-target_link_libraries(${PROJECT_NAME} dsp trama)
+add_subdirectory(pio_tx)
+target_link_libraries(${PROJECT_NAME} dsp trama pio_tx)
