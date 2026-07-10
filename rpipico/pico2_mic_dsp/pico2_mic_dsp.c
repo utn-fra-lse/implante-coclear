@@ -109,6 +109,9 @@ int main()
     gpio_put(TRIG_GPIO, false);
 #endif
 
+    // Habilito transmisor por PIO
+    pio_tx_init(TX_GPIO);
+
     while(true) {
         
         if(queue_try_remove(&queue, &trama_data)) {
