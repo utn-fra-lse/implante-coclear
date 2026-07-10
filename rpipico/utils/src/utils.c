@@ -32,6 +32,12 @@ void generate_sample_buffer(uint8_t *buffer, uint16_t size, uint32_t sample_rate
 
 void send_fft_data_usb(const fft_usb_packet_t *packet) {
     if (!packet) return;
-    fwrite(packet, sizeof(fft_usb_packet_t), 1, stdout);
+    
+    // Usamos putchar_raw para enviar los bytes crudos y evitar 
+    // que la librería C inyecte un '\r' (0x0D) antes de cada '\n' (0x0A)
+    const uint8_t *ptr = (const uint8_t *)packet;
+    for (size_t i = 0; i < sizeof(fft_usb_packet_t); i++) {
+        putchar_raw(ptr[i]);
+    }
     fflush(stdout);
 }
