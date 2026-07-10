@@ -62,7 +62,7 @@ int main()
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
     gpio_put(PICO_DEFAULT_LED_PIN, 0);
-    init_pwm_test(PIN_PWM_TEST1, 500);
+    // init_pwm_test(PIN_PWM_TEST1, 500);
     // init_pwm_test(PIN_PWM_TEST2, 6000);
     
     
@@ -99,7 +99,7 @@ int main()
     pio_tx_init(TX_GPIO);
 
     while(true) {
-    
+        
         if(!queue_try_remove(&queue, (void *) trama_data)) {
             continue;
         }
@@ -166,15 +166,18 @@ void init_dma_with_irq(uint dma_chan) {
 void core1_fft() {
     float32_t * input_f32  = (float32_t *)  malloc(FFT_SIZE * sizeof(float32_t));
     float32_t * fft_output = (float32_t *)  malloc(FFT_SIZE * sizeof(float32_t));
+    float32_t * fft_real = (float32_t *)  malloc((FFT_SIZE / 2) * sizeof(float32_t));
+    float32_t * fft_imag = (float32_t *)  malloc((FFT_SIZE / 2) * sizeof(float32_t));
     float32_t * magnitudes = (float32_t *)  malloc((FFT_SIZE / 2) * sizeof(float32_t));
 
     uint16_t out_data[N_FILTERS];
     
-    if (!input_f32 || !fft_output || !magnitudes) {
+    if (!input_f32 || !fft_output || !magnitudes || !fft_real || !fft_imag) {
         printf("[CORE 1] Failed to allocate memory for FFT buffers\n");
         return;
     }
 
+    init_filters(); // Initialize the IIR filter instance
     // FFT instance
     arm_rfft_fast_instance_f32 fft_instance;
     arm_status status = arm_rfft_fast_init_f32(&fft_instance, FFT_SIZE);
@@ -185,6 +188,7 @@ void core1_fft() {
         status = arm_rfft_fast_init_f32(&fft_instance, FFT_SIZE);
     }
     
+
     while (true) {
         if(write_index == read_index && adc_running) {
             sleep_ms(1); // Wait for data to be available
@@ -195,9 +199,16 @@ void core1_fft() {
         #endif
         // Normalize the buffer to [-1.0, 1.0] range
         dsp_normalize_buffer(buffers[read_index], input_f32, FFT_SIZE);
+
+        // Filtro IIR pasa altos - Eliminar la continua
+        arm_biquad_cascade_df1_f32(&IIR_HPF_input_instance, input_f32, input_f32, FFT_SIZE);
+
         // Perform the real FFT
         arm_rfft_fast_f32(&fft_instance, input_f32, fft_output, 0);
-    
+        
+        // Dividir el array complejo en real e imaginario
+        split_complex_array(fft_output, fft_real, fft_imag, FFT_SIZE / 2);
+
         // Compute magnitudes
         arm_cmplx_mag_f32(fft_output, magnitudes, FFT_SIZE / 2);
     

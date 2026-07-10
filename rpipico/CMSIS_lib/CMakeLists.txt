@@ -14,6 +14,7 @@ add_library(cmsis_lib STATIC
     ${CMSIS_DSP_DIR}/Source/BasicMathFunctions/arm_mult_f32.c
     ${CMSIS_DSP_DIR}/Source/BasicMathFunctions/arm_abs_f32.c
     ${CMSIS_DSP_DIR}/Source/ComplexMathFunctions/arm_cmplx_mag_f32.c
+    ${CMSIS_DSP_DIR}/Source/FilteringFunctions/arm_biquad_cascade_df1_f32.c
 )
 
 # Define target CPU macro for CMSIS-DSP
