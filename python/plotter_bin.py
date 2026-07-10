@@ -55,6 +55,11 @@ def main():
     sample_rate, num_bins, real_part, imag_part = data
     print(f"Trama capturada: Fs={sample_rate}Hz, Bins={num_bins}")
     
+    print("\n--- DATOS RECIBIDOS ---")
+    print(f"Parte Real:\n{np.array(real_part)}")
+    print(f"Parte Imaginaria:\n{np.array(imag_part)}")
+    print("-----------------------\n")
+    
     # Valores esperados según el MOCK_USB_DATA en el código C
     expected_real = [float(i) for i in range(num_bins)]
     expected_imag = [float(num_bins - i) for i in range(num_bins)]
