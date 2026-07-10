@@ -111,7 +111,7 @@ int main()
 
     while(true) {
         
-        if(queue_try_remove(&queue, (void *) trama_data)) {
+        if(queue_try_remove(&queue, &trama_data)) {
             for(uint32_t i = 0; i < N_FILTERS; i++) {
                 uint16_t data = trama_b_generate(i, trama_data[i]);
                 // printf("%02d: 0x%04x\n", i, data); // COMENTADO: printf corrompe el stream binario USB
