@@ -16,8 +16,11 @@
 #define PICO_DEFAULT_LED_PIN    10
 
 queue_t queue;
+float32_t core_comm_buffers[2][FFT_SIZE];
+uint8_t comm_index = 0;
 
 // #define __MEASURE_FFT_TIME__
+#define MOCK_USB_DATA 1
 // Channel 0 is GPIO26
 #define CAPTURE_CHANNEL 0
 
@@ -84,6 +87,10 @@ int main()
     // Start core1
     multicore_launch_core1(core1_fft);
     // multicore_launch_core1(core1_send_samples);
+    queue_init(&queue, sizeof(float32_t *), 2);
+    float32_t *rx_fft_data = NULL;
+    fft_usb_packet_t usb_packet;
+    
     queue_init(&queue, sizeof(uint16_t *), 1);
     uint16_t *trama_data = NULL;
     uint8_t bit_index = 0;
@@ -95,24 +102,38 @@ int main()
     gpio_put(TRIG_GPIO, false);
 #endif
 
-    // Habilito transmisor por PIO
-    pio_tx_init(TX_GPIO);
-
     while(true) {
         
-        if(!queue_try_remove(&queue, (void *) trama_data)) {
-            continue;
-        }
-        for(uint32_t i = 0; i < N_FILTERS; i++) {
-            uint16_t data = trama_b_generate(i, trama_data[i]);
-            printf("%02d: 0x%04x\n", i, data);
-            for(uint32_t j = 0; j < 16; j++) {
-                // Asigno la cantidad de pulsos segun si es 1 o 0
-                pio_tx_start(data & (1 << (15 - j)));
-                while(!pio_tx_is_done());
+        if(queue_try_remove(&queue, (void *) trama_data)) {
+            for(uint32_t i = 0; i < N_FILTERS; i++) {
+                uint16_t data = trama_b_generate(i, trama_data[i]);
+                printf("%02d: 0x%04x\n", i, data);
+                for(uint32_t j = 0; j < 16; j++) {
+                    // Asigno la cantidad de pulsos segun si es 1 o 0
+                    pio_tx_start(data & (1 << (15 - j)));
+                    while(!pio_tx_is_done());
+                }
             }
         }
-        puts("");
+        if(queue_try_remove(&queue, &rx_fft_data)) {
+            // Formateo de los datos en el Core 0
+            usb_packet.sync[0] = 0xAA;
+            usb_packet.sync[1] = 0x55;
+            usb_packet.sample_rate = ADC_CLK_HZ;
+            usb_packet.num_bins = FFT_SIZE / 2;
+            
+#if MOCK_USB_DATA
+            // Generar un patrón lineal simple para verificar
+            for (uint16_t i = 0; i < FFT_SIZE / 2; i++) {
+                usb_packet.real_part[i] = (float)i;
+                usb_packet.imag_part[i] = (float)((FFT_SIZE / 2) - i);
+            }
+#else
+            // Dividir el array complejo en real e imaginario
+            split_complex_array(rx_fft_data, usb_packet.real_part, usb_packet.imag_part, FFT_SIZE / 2);
+#endif
+            send_fft_data_usb(&usb_packet);
+        }
     }
 }
 
@@ -165,14 +186,14 @@ void init_dma_with_irq(uint dma_chan) {
 
 void core1_fft() {
     float32_t * input_f32  = (float32_t *)  malloc(FFT_SIZE * sizeof(float32_t));
-    float32_t * fft_output = (float32_t *)  malloc(FFT_SIZE * sizeof(float32_t));
+    // float32_t * fft_output = (float32_t *)  malloc(FFT_SIZE * sizeof(float32_t));
     float32_t * fft_real = (float32_t *)  malloc((FFT_SIZE / 2) * sizeof(float32_t));
     float32_t * fft_imag = (float32_t *)  malloc((FFT_SIZE / 2) * sizeof(float32_t));
     float32_t * magnitudes = (float32_t *)  malloc((FFT_SIZE / 2) * sizeof(float32_t));
 
     uint16_t out_data[N_FILTERS];
     
-    if (!input_f32 || !fft_output || !magnitudes || !fft_real || !fft_imag) {
+    if (!input_f32 || !magnitudes || !fft_real || !fft_imag) {
         printf("[CORE 1] Failed to allocate memory for FFT buffers\n");
         return;
     }
@@ -203,14 +224,14 @@ void core1_fft() {
         // Filtro IIR pasa altos - Eliminar la continua
         arm_biquad_cascade_df1_f32(&IIR_HPF_input_instance, input_f32, input_f32, FFT_SIZE);
 
-        // Perform the real FFT
-        arm_rfft_fast_f32(&fft_instance, input_f32, fft_output, 0);
+        float32_t *current_fft_out = core_comm_buffers[comm_index];
+        arm_rfft_fast_f32(&fft_instance, input_f32, current_fft_out, 0);
         
-        // Dividir el array complejo en real e imaginario
-        split_complex_array(fft_output, fft_real, fft_imag, FFT_SIZE / 2);
+        // Enviar el puntero de datos crudos a través de la cola hacia el Core 0
+        queue_try_add(&queue, &current_fft_out);
 
         // Compute magnitudes
-        arm_cmplx_mag_f32(fft_output, magnitudes, FFT_SIZE / 2);
+        arm_cmplx_mag_f32(current_fft_out, magnitudes, FFT_SIZE / 2);
     
         // Print first 20 FFT magnitudes
         printf("[CORE 1] First 20 FFT magnitudes at %u:\n", ADC_CLK_HZ);
@@ -218,18 +239,20 @@ void core1_fft() {
         int64_t elapsed_time = absolute_time_diff_us(start_time, get_absolute_time());
         printf("Tiempo de procesamiento: %lld us\n", elapsed_time);
         #else
-        send_freqs_magnitude(magnitudes, FFT_SIZE / SAMPLE_MULTIPLIER, (uint16_t) (ADC_CLK_HZ / FFT_SIZE));
+        // send_freqs_magnitude(magnitudes, FFT_SIZE / SAMPLE_MULTIPLIER, (uint16_t) (ADC_CLK_HZ / FFT_SIZE));
         // send_fft_data_binary(magnitudes, FFT_SIZE / 2);
         #endif
 
         dsp_compute_estimulos(magnitudes, out_data);
         queue_try_add(&queue, (void *) out_data);
+        
+        // Intercambiar buffer para el próximo frame
+        comm_index = (comm_index + 1) % 2;
         read_index = (read_index + 1) % N_DATA_BUFFERS;
         if (!adc_running) {
             adc_running = true;
             adc_run(true);
         }
-        
     }
 }
 
