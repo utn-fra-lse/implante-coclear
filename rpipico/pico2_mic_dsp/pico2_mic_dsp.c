@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "pico/stdlib.h"
+#include "pico/stdio_usb.h"
 #include "pico/multicore.h"
 #include "pico/util/queue.h"
 #include "hardware/adc.h"
@@ -63,6 +64,8 @@ void dma_irq0_handler(void) {
 int main()
 {
     stdio_init_all();
+    stdio_set_translate_crlf(&stdio_usb, false); // Apagar inyección CRLF (crucial para mandar binario)
+
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
     gpio_put(PICO_DEFAULT_LED_PIN, 0);
@@ -85,14 +88,17 @@ int main()
     dma_chan = dma_claim_unused_channel(true);
     init_dma_with_irq(dma_chan);
     
+    // Inicializar colas ANTES de lanzar el core 1 para evitar race conditions
+    queue_init(&queue_usb, sizeof(float32_t *), 2);
+    queue_init(&queue, sizeof(uint16_t *), 1);
+    
     // Start core1
     multicore_launch_core1(core1_fft);
     // multicore_launch_core1(core1_send_samples);
-    queue_init(&queue_usb, sizeof(float32_t *), 2);
+
     float32_t *rx_fft_data = NULL;
     fft_usb_packet_t usb_packet;
     
-    queue_init(&queue, sizeof(uint16_t *), 1);
     uint16_t *trama_data = NULL;
     uint8_t bit_index = 0;
 
