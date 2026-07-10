@@ -16,10 +16,11 @@
 #define PICO_DEFAULT_LED_PIN    10
 
 queue_t queue;
-fft_usb_packet_t usb_packets[2];
-uint8_t packet_index = 0;
+float32_t core_comm_buffers[2][FFT_SIZE];
+uint8_t comm_index = 0;
 
 // #define __MEASURE_FFT_TIME__
+#define MOCK_USB_DATA 1
 // Channel 0 is GPIO26
 #define CAPTURE_CHANNEL 0
 
@@ -86,8 +87,9 @@ int main()
     // Start core1
     multicore_launch_core1(core1_fft);
     // multicore_launch_core1(core1_send_samples);
-    queue_init(&queue, sizeof(fft_usb_packet_t *), 2);
-    fft_usb_packet_t *rx_packet = NULL;
+    queue_init(&queue, sizeof(float32_t *), 2);
+    float32_t *rx_fft_data = NULL;
+    fft_usb_packet_t usb_packet;
 
 #ifdef TRIG_GPIO
     // GPIO para ayudar al trigger del osciloscopio
@@ -97,8 +99,26 @@ int main()
 #endif
 
     while(true) {
-        if(queue_try_remove(&queue, &rx_packet)) {
-            send_fft_data_usb(rx_packet);
+        if(queue_try_remove(&queue, &rx_fft_data)) {
+            // Formateo de los datos en el Core 0
+            usb_packet.sync[0] = 0xAA;
+            usb_packet.sync[1] = 0x55;
+            usb_packet.sample_rate = ADC_CLK_HZ;
+            usb_packet.num_bins = FFT_SIZE / 2;
+            
+#if MOCK_USB_DATA
+            // Generar un patrón lineal simple para verificar
+            for (uint16_t i = 0; i < FFT_SIZE / 2; i++) {
+                usb_packet.real_part[i] = (float)i;
+                usb_packet.imag_part[i] = (float)((FFT_SIZE / 2) - i);
+            }
+#else
+            for (uint16_t i = 0; i < FFT_SIZE / 2; i++) {
+                usb_packet.real_part[i] = rx_fft_data[2 * i];
+                usb_packet.imag_part[i] = rx_fft_data[2 * i + 1];
+            }
+#endif
+            send_fft_data_usb(&usb_packet);
         }
     }
 }
@@ -152,12 +172,11 @@ void init_dma_with_irq(uint dma_chan) {
 
 void core1_fft() {
     float32_t * input_f32  = (float32_t *)  malloc(FFT_SIZE * sizeof(float32_t));
-    float32_t * fft_output = (float32_t *)  malloc(FFT_SIZE * sizeof(float32_t));
     float32_t * magnitudes = (float32_t *)  malloc((FFT_SIZE / 2) * sizeof(float32_t));
 
     uint16_t out_data[N_FILTERS];
     
-    if (!input_f32 || !fft_output || !magnitudes) {
+    if (!input_f32 || !magnitudes) {
         printf("[CORE 1] Failed to allocate memory for FFT buffers\n");
         return;
     }
@@ -183,26 +202,14 @@ void core1_fft() {
         // Normalize the buffer to [-1.0, 1.0] range
         dsp_normalize_buffer(buffers[read_index], input_f32, FFT_SIZE);
         // Perform the real FFT
-        arm_rfft_fast_f32(&fft_instance, input_f32, fft_output, 0);
+        float32_t *current_fft_out = core_comm_buffers[comm_index];
+        arm_rfft_fast_f32(&fft_instance, input_f32, current_fft_out, 0);
     
-        // Llenar el buffer ping-pong actual con metadata y datos crudos
-        fft_usb_packet_t *packet = &usb_packets[packet_index];
-        packet->sync[0] = 0xAA;
-        packet->sync[1] = 0x55;
-        packet->sample_rate = ADC_CLK_HZ;
-        packet->num_bins = FFT_SIZE / 2;
-        
-        // arm_rfft_fast_f32 guarda datos reales/imaginarios intercalados
-        for (uint16_t i = 0; i < FFT_SIZE / 2; i++) {
-            packet->real_part[i] = fft_output[2 * i];
-            packet->imag_part[i] = fft_output[2 * i + 1];
-        }
-        
-        // Enviar el puntero a través de la cola hacia el Core 0
-        queue_try_add(&queue, &packet);
+        // Enviar el puntero de datos crudos a través de la cola hacia el Core 0
+        queue_try_add(&queue, &current_fft_out);
         
         // Intercambiar buffer para el próximo frame
-        packet_index = (packet_index + 1) % 2;
+        comm_index = (comm_index + 1) % 2;
         read_index = (read_index + 1) % N_DATA_BUFFERS;
         if (!adc_running) {
             adc_running = true;
