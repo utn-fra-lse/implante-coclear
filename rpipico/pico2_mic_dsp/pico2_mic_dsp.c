@@ -16,6 +16,8 @@
 #define PICO_DEFAULT_LED_PIN    10
 
 queue_t queue;
+fft_usb_packet_t usb_packets[2];
+uint8_t packet_index = 0;
 
 // #define __MEASURE_FFT_TIME__
 // Channel 0 is GPIO26
@@ -84,9 +86,8 @@ int main()
     // Start core1
     multicore_launch_core1(core1_fft);
     // multicore_launch_core1(core1_send_samples);
-    queue_init(&queue, sizeof(uint16_t *), 1);
-    uint16_t *trama_data = NULL;
-    uint8_t bit_index = 0;
+    queue_init(&queue, sizeof(fft_usb_packet_t *), 2);
+    fft_usb_packet_t *rx_packet = NULL;
 
 #ifdef TRIG_GPIO
     // GPIO para ayudar al trigger del osciloscopio
@@ -95,24 +96,10 @@ int main()
     gpio_put(TRIG_GPIO, false);
 #endif
 
-    // Habilito transmisor por PIO
-    pio_tx_init(TX_GPIO);
-
     while(true) {
-    
-        if(!queue_try_remove(&queue, (void *) trama_data)) {
-            continue;
+        if(queue_try_remove(&queue, &rx_packet)) {
+            send_fft_data_usb(rx_packet);
         }
-        for(uint32_t i = 0; i < N_FILTERS; i++) {
-            uint16_t data = trama_b_generate(i, trama_data[i]);
-            printf("%02d: 0x%04x\n", i, data);
-            for(uint32_t j = 0; j < 16; j++) {
-                // Asigno la cantidad de pulsos segun si es 1 o 0
-                pio_tx_start(data & (1 << (15 - j)));
-                while(!pio_tx_is_done());
-            }
-        }
-        puts("");
     }
 }
 
@@ -198,21 +185,24 @@ void core1_fft() {
         // Perform the real FFT
         arm_rfft_fast_f32(&fft_instance, input_f32, fft_output, 0);
     
-        // Compute magnitudes
-        arm_cmplx_mag_f32(fft_output, magnitudes, FFT_SIZE / 2);
-    
-        // Print first 20 FFT magnitudes
-        printf("[CORE 1] First 20 FFT magnitudes at %u:\n", ADC_CLK_HZ);
-        #ifdef __MEASURE_FFT_TIME__
-        int64_t elapsed_time = absolute_time_diff_us(start_time, get_absolute_time());
-        printf("Tiempo de procesamiento: %lld us\n", elapsed_time);
-        #else
-        send_freqs_magnitude(magnitudes, FFT_SIZE / SAMPLE_MULTIPLIER, (uint16_t) (ADC_CLK_HZ / FFT_SIZE));
-        // send_fft_data_binary(magnitudes, FFT_SIZE / 2);
-        #endif
-
-        dsp_compute_estimulos(magnitudes, out_data);
-        queue_try_add(&queue, (void *) out_data);
+        // Llenar el buffer ping-pong actual con metadata y datos crudos
+        fft_usb_packet_t *packet = &usb_packets[packet_index];
+        packet->sync[0] = 0xAA;
+        packet->sync[1] = 0x55;
+        packet->sample_rate = ADC_CLK_HZ;
+        packet->num_bins = FFT_SIZE / 2;
+        
+        // arm_rfft_fast_f32 guarda datos reales/imaginarios intercalados
+        for (uint16_t i = 0; i < FFT_SIZE / 2; i++) {
+            packet->real_part[i] = fft_output[2 * i];
+            packet->imag_part[i] = fft_output[2 * i + 1];
+        }
+        
+        // Enviar el puntero a través de la cola hacia el Core 0
+        queue_try_add(&queue, &packet);
+        
+        // Intercambiar buffer para el próximo frame
+        packet_index = (packet_index + 1) % 2;
         read_index = (read_index + 1) % N_DATA_BUFFERS;
         if (!adc_running) {
             adc_running = true;
