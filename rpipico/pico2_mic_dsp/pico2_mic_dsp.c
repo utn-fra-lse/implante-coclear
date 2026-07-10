@@ -16,6 +16,7 @@
 #define PICO_DEFAULT_LED_PIN    10
 
 queue_t queue;
+queue_t queue_usb;
 float32_t core_comm_buffers[2][FFT_SIZE];
 uint8_t comm_index = 0;
 
@@ -87,7 +88,7 @@ int main()
     // Start core1
     multicore_launch_core1(core1_fft);
     // multicore_launch_core1(core1_send_samples);
-    queue_init(&queue, sizeof(float32_t *), 2);
+    queue_init(&queue_usb, sizeof(float32_t *), 2);
     float32_t *rx_fft_data = NULL;
     fft_usb_packet_t usb_packet;
     
@@ -107,7 +108,7 @@ int main()
         if(queue_try_remove(&queue, (void *) trama_data)) {
             for(uint32_t i = 0; i < N_FILTERS; i++) {
                 uint16_t data = trama_b_generate(i, trama_data[i]);
-                printf("%02d: 0x%04x\n", i, data);
+                // printf("%02d: 0x%04x\n", i, data); // COMENTADO: printf corrompe el stream binario USB
                 for(uint32_t j = 0; j < 16; j++) {
                     // Asigno la cantidad de pulsos segun si es 1 o 0
                     pio_tx_start(data & (1 << (15 - j)));
@@ -115,7 +116,7 @@ int main()
                 }
             }
         }
-        if(queue_try_remove(&queue, &rx_fft_data)) {
+        if(queue_try_remove(&queue_usb, &rx_fft_data)) {
             // Formateo de los datos en el Core 0
             usb_packet.sync[0] = 0xAA;
             usb_packet.sync[1] = 0x55;
@@ -228,13 +229,13 @@ void core1_fft() {
         arm_rfft_fast_f32(&fft_instance, input_f32, current_fft_out, 0);
         
         // Enviar el puntero de datos crudos a través de la cola hacia el Core 0
-        queue_try_add(&queue, &current_fft_out);
+        queue_try_add(&queue_usb, &current_fft_out);
 
         // Compute magnitudes
         arm_cmplx_mag_f32(current_fft_out, magnitudes, FFT_SIZE / 2);
     
         // Print first 20 FFT magnitudes
-        printf("[CORE 1] First 20 FFT magnitudes at %u:\n", ADC_CLK_HZ);
+        // printf("[CORE 1] First 20 FFT magnitudes at %u:\n", ADC_CLK_HZ); // COMENTADO: printf corrompe el binario USB
         #ifdef __MEASURE_FFT_TIME__
         int64_t elapsed_time = absolute_time_diff_us(start_time, get_absolute_time());
         printf("Tiempo de procesamiento: %lld us\n", elapsed_time);
