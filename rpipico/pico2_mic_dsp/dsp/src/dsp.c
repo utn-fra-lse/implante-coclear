@@ -1,11 +1,49 @@
 #include "dsp.h"
 
+// Coeficientes calculados para HPF Fc ≈ 15Hz @ Fs = 36kHz
+// Estructura CMSIS-DSP: b0, b1, b2, a1, a2
+static const float32_t iir_coeffs[5 * INPUT_FILTER_STAGES] = {
+    0.9987f, -0.9987f, 0.0f, 0.9974f, 0.0f
+};
+
+// Estado del filtro (tamaño: 4 * INPUT_FILTER_STAGES)
+static float32_t iir_state[4 * INPUT_FILTER_STAGES];
+arm_biquad_casd_df1_inst_f32 IIR_HPF_input_instance;
+
+/**
+ * @brief Inicializa los filtros IIR
+ */
+void init_filters() {
+    arm_biquad_cascade_df1_init_f32(&IIR_HPF_input_instance, INPUT_FILTER_STAGES, (float32_t *)iir_coeffs, iir_state);
+}
+
+/**
+ * @brief Normaliza un buffer de datos de 8 bits a un rango de [-1.0, 1.0]
+ * @param buffer[in] Buffer de datos de entrada (uint8_t)
+ * @param normalized_buffer[out] Buffer de salida normalizado (float32_t)
+ * @param size Tamaño del buffer
+ */
 void dsp_normalize_buffer(uint8_t *buffer, float32_t *normalized_buffer, uint16_t size) {
     // Normalize the buffer to the range [-1.0, 1.0]
     for (uint16_t i = 0; i < size; ++i) {
         normalized_buffer[i] = (float32_t) (buffer[i] - MIC_OFFSET) / 128.0f;
     }
 }
+
+/**
+ * @brief Separa un array complejo en dos arrays: uno para la parte real y otro para la parte imaginaria.
+ * @param complex_array[in] Array complejo de entrada (float32_t)
+ * @param real_array[out] Array de salida para la parte real (float32_t)
+ * @param imag_array[out] Array de salida para la parte imaginaria (float32_t)
+ * @param size Tamaño del array complejo (número de elementos complejos, no el tamaño total del array)
+*/
+void split_complex_array(float32_t *complex_array, float32_t *real_array, float32_t *imag_array, uint16_t size) {
+    for (uint16_t i = 0; i < size; ++i) {
+        real_array[i] = complex_array[2 * i];     // Real part
+        imag_array[i] = complex_array[2 * i + 1]; // Imaginary part
+    }
+}
+
 
 /**
  * @brief 
@@ -28,7 +66,7 @@ float32_t dsp_get_filtered_range(float32_t *src, uint32_t min_freq, uint32_t max
 }
 
 /**
- * @brief 
+ * @brief Genera el array de bandas a partir de las magnitudes de la FFT. Utiliza MIN_FREQ, MAX_FREQ y N_FILTERS para determinar los rangos de frecuencia.
  * @param src[in] Array con FFT completa (magnitudes)
  * @param out_data[out] Array datos para enviar trama
  */
