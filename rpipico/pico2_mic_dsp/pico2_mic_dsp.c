@@ -14,20 +14,20 @@
 #include "trama.h"
 #include "pio_tx.h"
 
-#define PICO_DEFAULT_LED_PIN    10
+// #define PICO_DEFAULT_LED_PIN    10
 
 queue_t queue;
 queue_t queue_usb;
-float32_t core_comm_buffers[2][FFT_SIZE];
-uint8_t comm_index = 0;
 
 // #define __MEASURE_FFT_TIME__
-#define MOCK_USB_DATA 1
+#define MOCK_USB_DATA 0
 // Channel 0 is GPIO26
 #define CAPTURE_CHANNEL 0
 
 #define PIN_PWM_TEST1 28
 #define PIN_PWM_TEST2 4
+
+//#define TIME_TO_SEND_DATA_US 10000
 
 #define N_DATA_BUFFERS 3U
 
@@ -40,6 +40,7 @@ volatile bool adc_running = false;
 
 uint dma_chan;
 
+void core0_communication();
 void core1_fft();
 void core1_send_samples();
 void init_adc_clkdiv(uint16_t adc_clk_khz);
@@ -96,12 +97,6 @@ int main()
     multicore_launch_core1(core1_fft);
     // multicore_launch_core1(core1_send_samples);
 
-    float32_t *rx_fft_data = NULL;
-    fft_usb_packet_t usb_packet;
-    
-    uint16_t *trama_data = NULL;
-    uint8_t bit_index = 0;
-
 #ifdef TRIG_GPIO
     // GPIO para ayudar al trigger del osciloscopio
     gpio_init(TRIG_GPIO);
@@ -112,39 +107,7 @@ int main()
     // Habilito transmisor por PIO
     pio_tx_init(TX_GPIO);
 
-    while(true) {
-        
-        if(queue_try_remove(&queue, &trama_data)) {
-            for(uint32_t i = 0; i < N_FILTERS; i++) {
-                uint16_t data = trama_b_generate(i, trama_data[i]);
-                // printf("%02d: 0x%04x\n", i, data); // COMENTADO: printf corrompe el stream binario USB
-                for(uint32_t j = 0; j < 16; j++) {
-                    // Asigno la cantidad de pulsos segun si es 1 o 0
-                    pio_tx_start(data & (1 << (15 - j)));
-                    while(!pio_tx_is_done());
-                }
-            }
-        }
-        if(queue_try_remove(&queue_usb, &rx_fft_data)) {
-            // Formateo de los datos en el Core 0
-            usb_packet.sync[0] = 0xAA;
-            usb_packet.sync[1] = 0x55;
-            usb_packet.sample_rate = ADC_CLK_HZ;
-            usb_packet.num_bins = FFT_SIZE / 2;
-            
-#if MOCK_USB_DATA
-            // Generar un patrón lineal simple para verificar
-            for (uint16_t i = 0; i < FFT_SIZE / 2; i++) {
-                usb_packet.real_part[i] = (float)i;
-                usb_packet.imag_part[i] = (float)((FFT_SIZE / 2) - i);
-            }
-#else
-            // Dividir el array complejo en real e imaginario
-            split_complex_array(rx_fft_data, usb_packet.real_part, usb_packet.imag_part, FFT_SIZE / 2);
-#endif
-            send_fft_data_usb(&usb_packet);
-        }
-    }
+    core0_communication();
 }
 
 
@@ -192,14 +155,59 @@ void init_dma_with_irq(uint dma_chan) {
     );
 }
 
+void core0_communication(){
 
+    float32_t *rx_fft_data = NULL;
+    fft_usb_packet_t usb_packet;
+    
+    uint16_t *trama_data = NULL;
+    uint8_t bit_index = 0;
+
+    while(true) {
+        
+        // if(queue_try_remove(&queue, &trama_data)) {
+        //     for(uint32_t i = 0; i < N_FILTERS; i++) {
+        //         uint16_t data = trama_b_generate(i, trama_data[i]);
+        //         // printf("%02d: 0x%04x\n", i, data); // COMENTADO: printf corrompe el stream binario USB
+        //         for(uint32_t j = 0; j < 16; j++) {
+        //             // Asigno la cantidad de pulsos segun si es 1 o 0
+        //             pio_tx_start(data & (1 << (15 - j)));
+        //             while(!pio_tx_is_done());
+        //         }
+        //     }
+        // }
+        if(queue_try_remove(&queue_usb, &rx_fft_data)) {
+            // Formateo de los datos en el Core 0
+            usb_packet.sync[0] = 0xAA;
+            usb_packet.sync[1] = 0x55;
+            usb_packet.sample_rate = ADC_CLK_HZ;
+            usb_packet.num_bins = FFT_SIZE / 2;
+            
+#if MOCK_USB_DATA
+            // Generar un patrón lineal simple para verificar
+            for (uint16_t i = 0; i < FFT_SIZE / 2; i++) {
+                usb_packet.real_part[i] = (float)i;
+                usb_packet.imag_part[i] = (float)((FFT_SIZE / 2) - i);
+            }
+#else
+            // Dividir el array complejo en real e imaginario
+            split_complex_array(rx_fft_data, usb_packet.real_part, usb_packet.imag_part, FFT_SIZE / 2);
+#endif
+            send_fft_data_usb(&usb_packet);
+        }
+    }
+}
 
 void core1_fft() {
+    uint8_t comm_index = 0;
+    float32_t core_comm_buffers[2][FFT_SIZE];
     float32_t * input_f32  = (float32_t *)  malloc(FFT_SIZE * sizeof(float32_t));
     // float32_t * fft_output = (float32_t *)  malloc(FFT_SIZE * sizeof(float32_t));
     float32_t * fft_real = (float32_t *)  malloc((FFT_SIZE / 2) * sizeof(float32_t));
     float32_t * fft_imag = (float32_t *)  malloc((FFT_SIZE / 2) * sizeof(float32_t));
     float32_t * magnitudes = (float32_t *)  malloc((FFT_SIZE / 2) * sizeof(float32_t));
+    
+    uint32_t last_time = time_us_32();
 
     uint16_t out_data[N_FILTERS];
     
@@ -238,8 +246,15 @@ void core1_fft() {
         arm_rfft_fast_f32(&fft_instance, input_f32, current_fft_out, 0);
         
         // Enviar el puntero de datos crudos a través de la cola hacia el Core 0
+        #ifdef TIME_TO_SEND_DATA_US
+        if(time_us_32() - last_time > TIME_TO_SEND_DATA_US){
+            queue_try_add(&queue_usb, &current_fft_out);
+            last_time = time_us_32();
+        }
+        #else
         queue_try_add(&queue_usb, &current_fft_out);
-
+        #endif
+        
         // Compute magnitudes
         arm_cmplx_mag_f32(current_fft_out, magnitudes, FFT_SIZE / 2);
     
@@ -266,7 +281,7 @@ void core1_fft() {
     }
 }
 
-
+#ifdef __MEASURE_FFT_TIME__
 void core1_send_samples(void) {
     while (true) {
         if(write_index == read_index && adc_running) {
@@ -289,3 +304,4 @@ void core1_send_samples(void) {
         }
     }
 }
+#endif
