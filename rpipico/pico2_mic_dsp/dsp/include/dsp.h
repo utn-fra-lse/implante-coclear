@@ -20,11 +20,13 @@
 
 
 extern arm_biquad_casd_df1_inst_f32 IIR_HPF_input_instance;
+extern arm_biquad_casd_df1_inst_f32 IIR_LPF_input_instance;
 
 void init_filters();
 void dsp_normalize_buffer(uint8_t *buffer, float32_t *normalized_buffer, uint16_t size);
 void split_complex_array(float32_t *complex_array, float32_t *real_array, float32_t *imag_array, uint16_t size);
 float32_t dsp_get_filtered_range(float32_t *src, uint32_t min_freq, uint32_t max_freq);
 void dsp_compute_estimulos(float32_t *magnitudes, uint16_t *out_data);
+void window(float32_t *src, uint16_t size);
 
 #endif

@@ -37,11 +37,13 @@ def main():
         print(f"Error abriendo puerto serial: {e}")
         return
 
+    ola_buffer = np.zeros(256, dtype=np.float32)
+
     # Iniciar el stream de parlantes
     stream = sd.OutputStream(
         samplerate=16000, 
         channels=1, 
-        blocksize=512, 
+        blocksize=256, 
         callback=audio_callback
     )
     stream.start()
@@ -88,13 +90,16 @@ def main():
                     # iRFFT a 512 puntos
                     signal = np.fft.irfft(complex_spec, n=512)
                     
+                    audio_out = signal[:256] + ola_buffer
+                    ola_buffer = signal[256:]
+                    
                     # 1. Guardar para el .WAV (escalado)
-                    scaled_for_wav = np.clip(signal / 512.0, -1.0, 1.0)
+                    scaled_for_wav = np.clip(audio_out / 512.0, -1.0, 1.0)
                     recorded_audio.append(scaled_for_wav)
                     
                     # 2. Mandar a los parlantes en tiempo real
                     try:
-                        audio_queue.put_nowait(signal)
+                        audio_queue.put_nowait(audio_out)
                     except queue.Full:
                         pass # Descartamos frame del parlante si va lento, pero NO de la grabación
             else:

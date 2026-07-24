@@ -1,20 +1,37 @@
 #include "dsp.h"
 
-// Coeficientes calculados para HPF Fc ≈ 15Hz @ Fs = 36kHz
+// Coeficientes calculados para HPF Fc ≈ 15Hz @ Fs = 16kHz
 // Estructura CMSIS-DSP: b0, b1, b2, a1, a2
-static const float32_t iir_coeffs[5 * INPUT_FILTER_STAGES] = {
-    0.9987f, -0.9987f, 0.0f, 0.9974f, 0.0f
+float filter_highpass_15Hz_coeffs[5] = {
+    0.99706340f, -0.99706340f, 0.00000000f, 0.99412679f, 0.00000000f, // Sección 1
+};
+
+// Fc : 6000 
+// Filtro: filter_lowpass_6000Hz
+// Formato de coeficientes: {b0, b1, b2, a1, a2} (a0=1.0 implícito)
+static const float filter_lowpass_6000Hz[5] = {
+    0.50000000f, 0.50000000f, 0.00000000f, -0.00000000f, 0.00000000f, // Sección 1
 };
 
 // Estado del filtro (tamaño: 4 * INPUT_FILTER_STAGES)
-static float32_t iir_state[4 * INPUT_FILTER_STAGES];
+static float32_t hpf_iir_state[4 * INPUT_FILTER_STAGES];
+static float32_t lpf_iir_state[4 * INPUT_FILTER_STAGES];
 arm_biquad_casd_df1_inst_f32 IIR_HPF_input_instance;
+arm_biquad_casd_df1_inst_f32 IIR_LPF_input_instance;
 
+static float32_t hanning_window[FFT_SIZE];
+ 
 /**
  * @brief Inicializa los filtros IIR
  */
 void init_filters() {
-    arm_biquad_cascade_df1_init_f32(&IIR_HPF_input_instance, INPUT_FILTER_STAGES, (float32_t *)iir_coeffs, iir_state);
+    arm_biquad_cascade_df1_init_f32(&IIR_HPF_input_instance, INPUT_FILTER_STAGES, (float32_t *)filter_highpass_15Hz_coeffs, hpf_iir_state);
+    arm_biquad_cascade_df1_init_f32(&IIR_LPF_input_instance, INPUT_FILTER_STAGES, (float32_t *)filter_lowpass_6000Hz, lpf_iir_state);
+    arm_hanning_f32(hanning_window, FFT_SIZE);
+}
+
+void window(float32_t *src, uint16_t size){
+    arm_mult_f32(src, hanning_window, src, FFT_SIZE);
 }
 
 /**

@@ -30,6 +30,8 @@ def main():
     global GLOBAL_GAIN
     GLOBAL_GAIN = args.gain
 
+    ola_buffer = np.zeros(256, dtype=np.float32)
+
     try:
         ser = serial.Serial(args.port, args.baudrate, timeout=1)
         print(f"✅ Conectado a {args.port} a {args.baudrate} baudios.")
@@ -42,7 +44,7 @@ def main():
         stream = sd.OutputStream(
             samplerate=16000, 
             channels=1, 
-            blocksize=512, 
+            blocksize=256, 
             latency='low', 
             callback=audio_callback
         )
@@ -84,13 +86,16 @@ def main():
                     complex_spec = real_part + 1j * imag_part
                     signal = np.fft.irfft(complex_spec, n=512)
                     
+                    audio_out = signal[:256] + ola_buffer
+                    ola_buffer = signal[256:]
+                    
                     # Empujar a la cola, si está llena descartamos el viejo para mantener 0 delay
                     try:
-                        audio_queue.put_nowait(signal.astype(np.float32))
+                        audio_queue.put_nowait(audio_out.astype(np.float32))
                     except queue.Full:
                         try:
                             audio_queue.get_nowait()
-                            audio_queue.put_nowait(signal.astype(np.float32))
+                            audio_queue.put_nowait(audio_out.astype(np.float32))
                         except queue.Empty:
                             pass
             else:

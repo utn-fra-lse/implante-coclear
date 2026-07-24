@@ -16,7 +16,7 @@ def audio_callback(outdata, frames, time, status):
     if status:
         print(f"Audio status: {status}")
     try:
-        # We expect frames=512 (same as our IFFT output)
+        # Ahora esperamos frames=256 gracias al Overlap-Add
         data = audio_queue.get_nowait()
         
         # Audio expects float32 between -1.0 and 1.0. 
@@ -39,6 +39,7 @@ class SerialReaderThread(QThread):
         self.play_audio = play_audio
         self.running = True
         self.ser = None
+        self.ola_buffer = np.zeros(256, dtype=np.float32)
 
     def run(self):
         try:
@@ -56,12 +57,12 @@ class SerialReaderThread(QThread):
         
         if self.play_audio:
             # Iniciamos stream de audio
-            # blocksize=512 coincide exacto con el tamaño de la IFFT para no desfasar buffers
+            # blocksize=256 porque con Overlap-Add generamos 256 muestras netas por frame
             try:
                 stream = sd.OutputStream(
                     samplerate=16000, 
                     channels=1, 
-                    blocksize=512, 
+                    blocksize=256, 
                     callback=audio_callback
                 )
                 stream.start()
@@ -108,8 +109,14 @@ class SerialReaderThread(QThread):
                         signal = np.fft.irfft(complex_spec, n=512)
                         
                         if self.play_audio:
+                            # --- OVERLAP-ADD (OLA) ---
+                            # Sumamos la primera mitad de la IFFT con la cola del frame anterior
+                            audio_out = signal[:256] + self.ola_buffer
+                            # Guardamos la segunda mitad para el próximo frame
+                            self.ola_buffer = signal[256:]
+                            
                             try:
-                                audio_queue.put_nowait(signal.astype(np.float32))
+                                audio_queue.put_nowait(audio_out.astype(np.float32))
                             except queue.Full:
                                 pass # buffer lleno, descartamos este frame de audio
                                 
@@ -157,9 +164,13 @@ class MainWindow(QMainWindow):
 
         # Inicializar 4 plots
         self.plot_real = pg.PlotWidget(title="Parte Real")
+        self.plot_real.setLabel('bottom', 'Frecuencia (Hz)')
         self.plot_imag = pg.PlotWidget(title="Parte Imaginaria")
+        self.plot_imag.setLabel('bottom', 'Frecuencia (Hz)')
         self.plot_mag = pg.PlotWidget(title="Magnitud")
+        self.plot_mag.setLabel('bottom', 'Frecuencia (Hz)')
         self.plot_sig = pg.PlotWidget(title="Señal Temporal (IFFT)")
+        self.plot_sig.setLabel('bottom', 'Muestras')
 
         # Configurar grillas
         self.plot_real.showGrid(x=True, y=True, alpha=0.3)
@@ -168,10 +179,13 @@ class MainWindow(QMainWindow):
         self.plot_sig.showGrid(x=True, y=True, alpha=0.3)
 
         # Fijar rangos del eje X e Y
-        self.plot_real.setXRange(0, 255, padding=0)
-        self.plot_imag.setXRange(0, 255, padding=0)
-        self.plot_mag.setXRange(0, 255, padding=0)
+        self.plot_real.setXRange(0, 8000, padding=0)
+        self.plot_imag.setXRange(0, 8000, padding=0)
+        self.plot_mag.setXRange(0, 8000, padding=0)
         self.plot_sig.setXRange(0, 511, padding=0)
+
+        # Frecuencias para el eje X (16000 Hz sample rate, 512 N)
+        self.freqs = np.arange(256) * (16000 / 512)
 
         self.plot_real.setYRange(-10, 10, padding=0)
         self.plot_imag.setYRange(-10, 10, padding=0)
@@ -199,9 +213,9 @@ class MainWindow(QMainWindow):
         self.thread.start()
 
     def update_plots(self, real, imag, mag, sig):
-        self.curve_real.setData(real)
-        self.curve_imag.setData(imag)
-        self.curve_mag.setData(mag)
+        self.curve_real.setData(self.freqs, real)
+        self.curve_imag.setData(self.freqs, imag)
+        self.curve_mag.setData(self.freqs, mag)
         self.curve_sig.setData(sig)
 
     def closeEvent(self, event):

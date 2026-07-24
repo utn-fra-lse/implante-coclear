@@ -34,6 +34,7 @@ class CochlearSimulatorThread(QThread):
         self.play_audio = play_audio
         self.running = True
         self.ser = None
+        self.ola_buffer = np.zeros(256, dtype=np.float32)
 
     def run(self):
         try:
@@ -54,7 +55,7 @@ class CochlearSimulatorThread(QThread):
                 stream = sd.OutputStream(
                     samplerate=16000, 
                     channels=1, 
-                    blocksize=512, 
+                    blocksize=256, 
                     callback=audio_callback
                 )
                 stream.start()
@@ -127,8 +128,11 @@ class CochlearSimulatorThread(QThread):
                             # ruido blanco filtrado exactamente por las 8 bandas de energía.
                             vocoder_signal = np.fft.irfft(vocoder_complex, n=512)
                             
+                            audio_out = vocoder_signal[:256] + self.ola_buffer
+                            self.ola_buffer = vocoder_signal[256:]
+                            
                             try:
-                                audio_queue.put_nowait(vocoder_signal.astype(np.float32))
+                                audio_queue.put_nowait(audio_out.astype(np.float32))
                             except queue.Full:
                                 pass
                                 

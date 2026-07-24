@@ -30,6 +30,7 @@ queue_t queue_usb;
 //#define TIME_TO_SEND_DATA_US 10000
 
 #define N_DATA_BUFFERS 3U
+#define DMA_BLOCK_SIZE (FFT_SIZE / 2)
 
 #define TX_GPIO 27
 
@@ -55,12 +56,12 @@ void dma_irq0_handler(void) {
     dma_hw->ints0 = 1u << dma_chan;
 
     write_index = (write_index + 1) % N_DATA_BUFFERS; // Move to the next buffer
-    if (write_index == read_index) {
-        // Buffers are full -> stop ADC
-        adc_run(false);
-        adc_running = false;
-        adc_fifo_drain();
-    }
+    // if (write_index == read_index) {
+    //     // Buffers are full -> stop ADC
+    //     adc_run(false);
+    //     adc_running = false;
+    //     adc_fifo_drain();
+    // }
     // Seleccionar el nuevo buffer y iniciar la transferencia
     dma_channel_set_write_addr(dma_chan, buffers[write_index], true);
 }
@@ -78,7 +79,7 @@ int main()
     
     
     for (uint8_t i = 0; i < N_DATA_BUFFERS; ++i) {
-        buffers[i] = (uint8_t *) malloc(FFT_SIZE * sizeof(uint8_t));
+        buffers[i] = (uint8_t *) malloc(DMA_BLOCK_SIZE * sizeof(uint8_t));
 
         if (!buffers[i]) {
             printf("[CORE 0] Failed to allocate memory for buffer %d\n", i);
@@ -160,7 +161,7 @@ void init_dma_with_irq(uint dma_chan) {
     dma_channel_configure(dma_chan, &cfg,
         buffers[write_index],    // dst
         &adc_hw->fifo,  // src
-        FFT_SIZE,       // transfer count
+        DMA_BLOCK_SIZE, // transfer count
         true            // start immediately
     );
 }
@@ -211,7 +212,11 @@ void core0_communication(){
 void core1_fft() {
     uint8_t comm_index = 0;
     float32_t core_comm_buffers[2][FFT_SIZE];
-    float32_t * input_f32  = (float32_t *)  malloc(FFT_SIZE * sizeof(float32_t));
+    float32_t * new_samples    = (float32_t *) malloc(DMA_BLOCK_SIZE * sizeof(float32_t));
+    float32_t * sliding_window = (float32_t *) malloc(FFT_SIZE * sizeof(float32_t));
+    float32_t * fft_input      = (float32_t *) malloc(FFT_SIZE * sizeof(float32_t));
+    
+    for(int i = 0; i < FFT_SIZE; i++) sliding_window[i] = 0.0f;
     // float32_t * fft_output = (float32_t *)  malloc(FFT_SIZE * sizeof(float32_t));
     float32_t * fft_real = (float32_t *)  malloc((FFT_SIZE / 2) * sizeof(float32_t));
     float32_t * fft_imag = (float32_t *)  malloc((FFT_SIZE / 2) * sizeof(float32_t));
@@ -221,7 +226,7 @@ void core1_fft() {
 
     uint16_t out_data[N_FILTERS];
     
-    if (!input_f32 || !magnitudes || !fft_real || !fft_imag) {
+    if (!new_samples || !sliding_window || !fft_input || !magnitudes || !fft_real || !fft_imag) {
         printf("[CORE 1] Failed to allocate memory for FFT buffers\n");
         return;
     }
@@ -239,21 +244,29 @@ void core1_fft() {
     
 
     while (true) {
-        if(write_index == read_index && adc_running) {
-            sleep_ms(1); // Wait for data to be available
-            continue;
+        while(write_index == read_index && adc_running) {
+            __nop();
         }
         #ifdef __MEASURE_FFT_TIME__
         absolute_time_t start_time = get_absolute_time();
         #endif
-        // Normalize the buffer to [-1.0, 1.0] range
-        dsp_normalize_buffer(buffers[read_index], input_f32, FFT_SIZE);
+        dsp_normalize_buffer(buffers[read_index], new_samples, DMA_BLOCK_SIZE);
+        
+        arm_biquad_cascade_df1_f32(&IIR_HPF_input_instance, new_samples, new_samples, DMA_BLOCK_SIZE);
+        arm_biquad_cascade_df1_f32(&IIR_LPF_input_instance, new_samples, new_samples, DMA_BLOCK_SIZE);
 
-        // Filtro IIR pasa altos - Eliminar la continua
-        arm_biquad_cascade_df1_f32(&IIR_HPF_input_instance, input_f32, input_f32, FFT_SIZE);
+        for (uint16_t i = 0; i < DMA_BLOCK_SIZE; ++i) {
+            sliding_window[i] = sliding_window[i + DMA_BLOCK_SIZE];
+            sliding_window[i + DMA_BLOCK_SIZE] = new_samples[i];
+        }
+
+        for (uint16_t i = 0; i < FFT_SIZE; ++i) {
+            fft_input[i] = sliding_window[i];
+        }
+        window(fft_input, FFT_SIZE);
 
         float32_t *current_fft_out = core_comm_buffers[comm_index];
-        arm_rfft_fast_f32(&fft_instance, input_f32, current_fft_out, 0);
+        arm_rfft_fast_f32(&fft_instance, fft_input, current_fft_out, 0);
         
         // Enviar el puntero de datos crudos a través de la cola hacia el Core 0
         #ifdef TIME_TO_SEND_DATA_US
@@ -306,7 +319,7 @@ void core1_send_samples(void) {
         putchar_raw(0x55);
 
         // Enviar datos crudos
-        fwrite(buffers[read_index], sizeof(uint8_t), FFT_SIZE, stdout);
+        fwrite(buffers[read_index], sizeof(uint8_t), DMA_BLOCK_SIZE, stdout);
         fflush(stdout);
 
         read_index = (read_index + 1) % N_DATA_BUFFERS;
