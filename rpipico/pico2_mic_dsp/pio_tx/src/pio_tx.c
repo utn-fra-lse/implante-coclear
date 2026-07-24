@@ -18,7 +18,7 @@ typedef enum cycles_per_bit {
 } cycle_per_bit_t;
 
 /** El bit actual ya se mando */
-static bool send_next_bit = true;
+static volatile bool send_next_bit = true;
 
 /** PIO a usar */
 static PIO pio;

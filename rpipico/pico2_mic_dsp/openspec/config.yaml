@@ -1,0 +1,8 @@
+testing:
+  strict_tdd: false
+  runner: none
+  framework: none
+  coverage: none
+  linter: none
+  formatter: none
+  type_checker: none

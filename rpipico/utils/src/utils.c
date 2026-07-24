@@ -30,37 +30,11 @@ void generate_sample_buffer(uint8_t *buffer, uint16_t size, uint32_t sample_rate
 }
 
 
-void send_freqs_magnitude(float *magnitudes, uint16_t size, uint16_t freq_bin_width) {
-    // start of JSON-like array or message
-    printf("[\n");
-    for (uint16_t i = 0; i < size; ++i) {
-        printf("%d:%.2f\n", i * freq_bin_width, magnitudes[i]);
-
-        // if (i < size - 1)
-        //     printf(",");
-    }
-    printf("]\n");
-}
-
-void send_fft_data_binary(uint16_t *magnitudes, uint16_t fft_size, uint32_t sample_rate) {
-
-    // Header para marcar el inicio del paquete
-    putchar_raw(0xAA);
-    putchar_raw(0x55);
-
-    // Send sample rate
-    putchar_raw((sample_rate >> 0) & 0xFF);
-    putchar_raw((sample_rate >> 8) & 0xFF);
-    putchar_raw((sample_rate >> 16) & 0xFF);
-    putchar_raw((sample_rate >> 24) & 0xFF);
-
-    // Send FFT size
-    putchar_raw((fft_size >> 0) & 0xFF);
-    putchar_raw((fft_size >> 8) & 0xFF);
-
-    // Send FFT magnitudes (as uint16_t)
-    for (uint16_t i = 0; i < fft_size; ++i) {
-        putchar_raw((magnitudes[i] >> 0) & 0xFF);
-        putchar_raw((magnitudes[i] >> 8) & 0xFF);
-    }
+void send_fft_data_usb(const fft_usb_packet_t *packet) {
+    if (!packet) return;
+    
+    // Usar fwrite es necesario porque maneja correctamente el buffer USB
+    // (Llamar putchar_raw byte por byte causa sobrecarga y pérdida de datos).
+    fwrite(packet, sizeof(fft_usb_packet_t), 1, stdout);
+    fflush(stdout);
 }
