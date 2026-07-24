@@ -37,7 +37,7 @@ queue_t queue_usb;
 #define GPIO_LATENCIA
 #define OSC_GPIO_PIN 5
 
-uint8_t * buffers[N_DATA_BUFFERS];
+uint16_t * buffers[N_DATA_BUFFERS];
 volatile uint8_t write_index = 0;
 volatile uint8_t read_index = 0;
 volatile bool adc_running = false;
@@ -79,7 +79,7 @@ int main()
     
     
     for (uint8_t i = 0; i < N_DATA_BUFFERS; ++i) {
-        buffers[i] = (uint8_t *) malloc(DMA_BLOCK_SIZE * sizeof(uint8_t));
+        buffers[i] = (uint16_t *) malloc(DMA_BLOCK_SIZE * sizeof(uint16_t));
 
         if (!buffers[i]) {
             printf("[CORE 0] Failed to allocate memory for buffer %d\n", i);
@@ -132,7 +132,7 @@ void init_adc_clkdiv(uint16_t adc_clk_khz) {
         true,    // Enable DMA data request (DREQ)
         1,       // DREQ (and IRQ) asserted when at least 1 sample present
         false,   // We won't see the ERR bit because of 8 bit reads; disable.
-        true     // Shift each sample to 8 bits when pushing to FIFO
+        false    // Do not shift to 8 bits, keep 12-bit values padded to 16 bits
     );
     adc_fifo_drain();
     
@@ -145,7 +145,7 @@ void init_dma_with_irq(uint dma_chan) {
     dma_channel_config cfg = dma_channel_get_default_config(dma_chan);
 
     // Reading from constant address, writing to incrementing byte addresses
-    channel_config_set_transfer_data_size(&cfg, DMA_SIZE_8);
+    channel_config_set_transfer_data_size(&cfg, DMA_SIZE_16);
     channel_config_set_read_increment(&cfg, false);
     channel_config_set_write_increment(&cfg, true);
     // Pace transfers based on availability of ADC samples
@@ -263,6 +263,7 @@ void core1_fft() {
         for (uint16_t i = 0; i < FFT_SIZE; ++i) {
             fft_input[i] = sliding_window[i];
         }
+
         window(fft_input, FFT_SIZE);
 
         float32_t *current_fft_out = core_comm_buffers[comm_index];
@@ -319,7 +320,7 @@ void core1_send_samples(void) {
         putchar_raw(0x55);
 
         // Enviar datos crudos
-        fwrite(buffers[read_index], sizeof(uint8_t), DMA_BLOCK_SIZE, stdout);
+        fwrite(buffers[read_index], sizeof(uint16_t), DMA_BLOCK_SIZE, stdout);
         fflush(stdout);
 
         read_index = (read_index + 1) % N_DATA_BUFFERS;
