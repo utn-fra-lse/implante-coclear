@@ -33,6 +33,9 @@ queue_t queue_usb;
 
 #define TX_GPIO 27
 
+#define GPIO_LATENCIA
+#define OSC_GPIO_PIN 5
+
 uint8_t * buffers[N_DATA_BUFFERS];
 volatile uint8_t write_index = 0;
 volatile uint8_t read_index = 0;
@@ -102,6 +105,13 @@ int main()
     gpio_init(TRIG_GPIO);
     gpio_set_dir(TRIG_GPIO, true);
     gpio_put(TRIG_GPIO, false);
+#endif
+
+#ifdef GPIO_LATENCIA
+    // GPIO para medir la latencia del sistema con el osciloscopio
+    gpio_init(OSC_GPIO_PIN);
+    gpio_set_dir(OSC_GPIO_PIN, true);
+    gpio_put(OSC_GPIO_PIN, false);
 #endif
 
     // Habilito transmisor por PIO
@@ -270,7 +280,9 @@ void core1_fft() {
 
         dsp_compute_estimulos(magnitudes, out_data);
         queue_try_add(&queue, (void *) out_data);
-        
+        #ifdef GPIO_LATENCIA
+        gpio_put(OSC_GPIO_PIN, !gpio_get(OSC_GPIO_PIN));
+        #endif
         // Intercambiar buffer para el próximo frame
         comm_index = (comm_index + 1) % 2;
         read_index = (read_index + 1) % N_DATA_BUFFERS;
