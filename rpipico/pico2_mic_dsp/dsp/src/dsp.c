@@ -35,15 +35,27 @@ void window(float32_t *src, uint16_t size){
 }
 
 /**
+ * @brief Desempaqueta in-place el array de la RFFT de CMSIS descartando Nyquist y aislando DC.
+ * @param fft_buffer[in,out] Buffer crudo salido de arm_rfft_fast_f32
+ */
+void dsp_unpack_cmsis_fft(float32_t *fft_buffer) {
+    // CMSIS empaqueta Real(Nyquist) en el índice 1, donde debería ir Imag(DC).
+    // Como Nyquist está fuera del rango de cálculo (bins 0 a 255), 
+    // y la parte imaginaria de DC siempre es 0, lo pisamos con 0.0f
+    // para restaurar el formato [Real, Imag] estándar de pares intercalados.
+    fft_buffer[1] = 0.0f;
+}
+
+/**
  * @brief Normaliza un buffer de datos de 8 bits a un rango de [-1.0, 1.0]
  * @param buffer[in] Buffer de datos de entrada (uint8_t)
  * @param normalized_buffer[out] Buffer de salida normalizado (float32_t)
  * @param size Tamaño del buffer
  */
-void dsp_normalize_buffer(uint8_t *buffer, float32_t *normalized_buffer, uint16_t size) {
+void dsp_normalize_buffer(uint16_t *buffer, float32_t *normalized_buffer, uint16_t size) {
     // Normalize the buffer to the range [-1.0, 1.0]
     for (uint16_t i = 0; i < size; ++i) {
-        normalized_buffer[i] = (float32_t) (buffer[i] - MIC_OFFSET) / 128.0f;
+        normalized_buffer[i] = (float32_t) (buffer[i] - MIC_OFFSET) / MIC_SCALE;
     }
 }
 

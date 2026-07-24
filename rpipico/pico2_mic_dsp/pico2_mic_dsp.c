@@ -279,6 +279,9 @@ void core1_fft() {
         queue_try_add(&queue_usb, &current_fft_out);
         #endif
         
+        // Desempaquetar DC y eliminar Nyquist para que arm_cmplx_mag_f32 funcione bien
+        dsp_unpack_cmsis_fft(current_fft_out);
+        
         // Compute magnitudes
         arm_cmplx_mag_f32(current_fft_out, magnitudes, FFT_SIZE / 2);
     
