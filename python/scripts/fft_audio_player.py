@@ -15,7 +15,7 @@ def audio_callback(outdata, frames, time, status):
     try:
         data = audio_queue.get_nowait()
         # Escalado rudimentario y protección contra clipping
-        scaled = np.clip((data * GLOBAL_GAIN) / 512.0, -1.0, 1.0)
+        scaled = np.clip(data * GLOBAL_GAIN, -1.0, 1.0)
         outdata[:] = scaled.reshape(-1, 1)
     except queue.Empty:
         outdata[:] = np.zeros((frames, 1), dtype=np.float32)

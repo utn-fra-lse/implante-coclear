@@ -2,6 +2,7 @@ import sys
 import argparse
 import serial
 import numpy as np
+import scipy.signal as scipy_signal
 from scipy.io import wavfile
 
 def main():
@@ -11,6 +12,7 @@ def main():
     parser.add_argument("--out-fft", type=str, default="grabacion_fft.wav", help="Archivo de salida FFT")
     parser.add_argument("--out-vocoder", type=str, default="grabacion_vocoder.wav", help="Archivo de salida Vocoder")
     parser.add_argument("--gain", type=float, default=1.0, help="Multiplicador de ganancia de audio (ej. 2.0, 10.0)")
+    parser.add_argument("--cutoff", type=float, default=7000.0, help="Frecuencia de corte del filtro pasa bajos (Hz)")
     args = parser.parse_args()
 
     try:
@@ -23,6 +25,15 @@ def main():
     # Buffers para Overlap-Add
     ola_buffer_fft = np.zeros(256, dtype=np.float32)
     ola_buffer_vocoder = np.zeros(256, dtype=np.float32)
+
+    # Inicialización del filtro pasa bajos (Butterworth) a 7000 Hz
+    nyq = 16000 / 2.0
+    if args.cutoff > 0 and args.cutoff < nyq:
+        b, a = scipy_signal.butter(4, args.cutoff / nyq, btype='low')
+        zi_fft = scipy_signal.lfilter_zi(b, a)
+        zi_vocoder = scipy_signal.lfilter_zi(b, a)
+    else:
+        b, a, zi_fft, zi_vocoder = None, None, None, None
 
     buffer = bytearray()
     packet_size = 2056
@@ -86,7 +97,10 @@ def main():
                     audio_out_fft = signal_fft[:256] + ola_buffer_fft
                     ola_buffer_fft = signal_fft[256:]
                     
-                    scaled_fft = np.clip((audio_out_fft * args.gain) / 512.0, -1.0, 1.0)
+                    if b is not None:
+                        audio_out_fft, zi_fft = scipy_signal.lfilter(b, a, audio_out_fft, zi=zi_fft)
+                    
+                    scaled_fft = np.clip(audio_out_fft * args.gain, -1.0, 1.0)
                     recorded_fft.append(scaled_fft)
 
                     # ----------------------------------------------------
@@ -110,7 +124,10 @@ def main():
                     audio_out_vocoder = vocoder_signal[:256] + ola_buffer_vocoder
                     ola_buffer_vocoder = vocoder_signal[256:]
                     
-                    scaled_vocoder = np.clip((audio_out_vocoder * args.gain) / 512.0, -1.0, 1.0)
+                    if b is not None:
+                        audio_out_vocoder, zi_vocoder = scipy_signal.lfilter(b, a, audio_out_vocoder, zi=zi_vocoder)
+                    
+                    scaled_vocoder = np.clip(audio_out_vocoder * args.gain, -1.0, 1.0)
                     recorded_vocoder.append(scaled_vocoder)
                     
             else:

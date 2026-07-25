@@ -104,7 +104,7 @@ class ScriptLauncherMenu(QMainWindow):
         widgets = {}
         
         # Configuraciones específicas según el script
-        if script_name in ["cochlear_plotter.py", "fft_plotter.py"]:
+        if script_name in ["cochlear_plotter.py", "fft_plotter.py", "fft_audio_player.py", "fft_audio_recorder.py", "dual_audio_recorder.py"]:
             # Puerto
             port_input = QLineEdit("COM3")
             form_layout.addRow("Puerto Serial:", port_input)
@@ -117,38 +117,65 @@ class ScriptLauncherMenu(QMainWindow):
             baud_input.setSingleStep(9600)
             form_layout.addRow("Baudrate:", baud_input)
             widgets['baudrate'] = baud_input
-            
-            # Ganancia
-            gain_input = QDoubleSpinBox()
-            gain_input.setRange(0.1, 100.0)
-            gain_input.setValue(1.0)
-            gain_input.setSingleStep(0.5)
-            form_layout.addRow("Ganancia de Audio:", gain_input)
-            widgets['gain'] = gain_input
-            
-            # Play Audio
-            play_audio_input = QCheckBox("Escuchar salida IFFT / Vocoder")
-            form_layout.addRow("", play_audio_input)
-            widgets['play_audio'] = play_audio_input
 
-        elif script_name == "fft_audio_recorder.py":
-            # Puerto
-            port_input = QLineEdit("COM3")
-            form_layout.addRow("Puerto Serial:", port_input)
-            widgets['port'] = port_input
+            if script_name in ["cochlear_plotter.py", "fft_plotter.py", "fft_audio_player.py", "dual_audio_recorder.py"]:
+                # Ganancia
+                gain_input = QDoubleSpinBox()
+                gain_input.setRange(0.1, 100.0)
+                gain_input.setValue(1.0)
+                gain_input.setSingleStep(0.5)
+                form_layout.addRow("Ganancia de Audio:", gain_input)
+                widgets['gain'] = gain_input
+
+            if script_name in ["cochlear_plotter.py", "fft_plotter.py"]:
+                # Play Audio
+                play_audio_input = QCheckBox("Escuchar salida de audio")
+                form_layout.addRow("", play_audio_input)
+                widgets['play_audio'] = play_audio_input
+                
+            if script_name in ["fft_plotter.py", "cochlear_plotter.py"]:
+                # Auto threshold
+                auto_thresh_input = QSpinBox()
+                auto_thresh_input.setRange(0, 1000)
+                auto_thresh_input.setValue(0)
+                form_layout.addRow("Auto-Threshold (frames):", auto_thresh_input)
+                widgets['auto_threshold'] = auto_thresh_input
+
+            if script_name == "fft_audio_recorder.py":
+                output_input = QLineEdit("grabacion.wav")
+                form_layout.addRow("Archivo de salida:", output_input)
+                widgets['output'] = output_input
+                
+            if script_name == "dual_audio_recorder.py":
+                out_fft_input = QLineEdit("grabacion_fft.wav")
+                form_layout.addRow("Salida FFT:", out_fft_input)
+                widgets['out_fft'] = out_fft_input
+                
+                out_voc_input = QLineEdit("grabacion_vocoder.wav")
+                form_layout.addRow("Salida Vocoder:", out_voc_input)
+                widgets['out_vocoder'] = out_voc_input
+                
+            if script_name in ["fft_plotter.py", "fft_audio_recorder.py", "dual_audio_recorder.py"]:
+                cutoff_input = QDoubleSpinBox()
+                cutoff_input.setRange(0.0, 8000.0)
+                cutoff_input.setValue(7000.0)
+                cutoff_input.setSingleStep(500.0)
+                form_layout.addRow("Corte Filtro Pasa Bajos (Hz):", cutoff_input)
+                widgets['cutoff'] = cutoff_input
+
+        elif script_name == "wav_to_mp3.py":
+            input_wav = QLineEdit("grabacion.wav")
+            form_layout.addRow("WAV entrada:", input_wav)
+            widgets['input'] = input_wav
             
-            # Baudrate
-            baud_input = QSpinBox()
-            baud_input.setRange(9600, 2000000)
-            baud_input.setValue(115200)
-            baud_input.setSingleStep(9600)
-            form_layout.addRow("Baudrate:", baud_input)
-            widgets['baudrate'] = baud_input
+            output_mp3 = QLineEdit("")
+            output_mp3.setPlaceholderText("Opcional (auto-generado)")
+            form_layout.addRow("MP3 salida:", output_mp3)
+            widgets['output'] = output_mp3
             
-            # Archivo de salida
-            output_input = QLineEdit("grabacion.wav")
-            form_layout.addRow("Archivo de salida:", output_input)
-            widgets['output'] = output_input
+            bitrate = QLineEdit("192k")
+            form_layout.addRow("Bitrate:", bitrate)
+            widgets['bitrate'] = bitrate
             
         else:
             # Script genérico sin argumentos definidos visualmente, campo libre
@@ -194,38 +221,64 @@ class ScriptLauncherMenu(QMainWindow):
             
         command = [sys.executable, script_path]
         
-        if script_name in ["cochlear_plotter.py", "fft_plotter.py"]:
-            # Argumento posicional
+        if script_name in ["cochlear_plotter.py", "fft_plotter.py", "fft_audio_player.py", "fft_audio_recorder.py", "dual_audio_recorder.py"]:
             port = widgets['port'].text().strip()
             if not port:
                 QMessageBox.warning(self, "Falta dato", "El puerto serial es obligatorio.")
                 return
             command.append(port)
-            
             command.append("--baudrate")
             command.append(str(widgets['baudrate'].value()))
             
-            command.append("--gain")
-            command.append(str(widgets['gain'].value()))
-            
-            if widgets['play_audio'].isChecked():
+            if 'gain' in widgets:
+                command.append("--gain")
+                command.append(str(widgets['gain'].value()))
+                
+            if 'play_audio' in widgets and widgets['play_audio'].isChecked():
                 command.append("--play-audio")
                 
-        elif script_name == "fft_audio_recorder.py":
-            # Argumento posicional
-            port = widgets['port'].text().strip()
-            if not port:
-                QMessageBox.warning(self, "Falta dato", "El puerto serial es obligatorio.")
+            if 'auto_threshold' in widgets and widgets['auto_threshold'].value() > 0:
+                command.append("--auto-threshold")
+                command.append(str(widgets['auto_threshold'].value()))
+                
+            if 'output' in widgets:
+                out_val = widgets['output'].text().strip()
+                if out_val:
+                    command.append("--output")
+                    command.append(out_val)
+                    
+            if 'out_fft' in widgets:
+                out_val = widgets['out_fft'].text().strip()
+                if out_val:
+                    command.append("--out-fft")
+                    command.append(out_val)
+                    
+            if 'out_vocoder' in widgets:
+                out_val = widgets['out_vocoder'].text().strip()
+                if out_val:
+                    command.append("--out-vocoder")
+                    command.append(out_val)
+
+            if 'cutoff' in widgets:
+                command.append("--cutoff")
+                command.append(str(widgets['cutoff'].value()))
+
+        elif script_name == "wav_to_mp3.py":
+            in_val = widgets['input'].text().strip()
+            if not in_val:
+                QMessageBox.warning(self, "Falta dato", "El archivo de entrada es obligatorio.")
                 return
-            command.append(port)
+            command.append(in_val)
             
-            command.append("--baudrate")
-            command.append(str(widgets['baudrate'].value()))
-            
-            output = widgets['output'].text().strip()
-            if output:
+            out_val = widgets['output'].text().strip()
+            if out_val:
                 command.append("--output")
-                command.append(output)
+                command.append(out_val)
+                
+            br_val = widgets['bitrate'].text().strip()
+            if br_val:
+                command.append("--bitrate")
+                command.append(br_val)
                 
         else:
             import shlex

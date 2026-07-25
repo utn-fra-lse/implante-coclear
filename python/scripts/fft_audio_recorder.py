@@ -3,6 +3,7 @@ import argparse
 import serial
 import queue
 import numpy as np
+import scipy.signal as scipy_signal
 import sounddevice as sd
 from scipy.io import wavfile
 
@@ -17,7 +18,7 @@ def audio_callback(outdata, frames, time, status):
         data = audio_queue.get_nowait()
         
         # Escalado rudimentario
-        scaled = np.clip(data / 512.0, -1.0, 1.0)
+        scaled = np.clip(data, -1.0, 1.0)
         outdata[:] = scaled.reshape(-1, 1)
     except queue.Empty:
         # Si la cola está vacía, reproducimos silencio
@@ -28,6 +29,7 @@ def main():
     parser.add_argument("port", type=str, help="Puerto serial (ej. COM3)")
     parser.add_argument("--baudrate", type=int, default=115200, help="Baud rate (ignorado por USB CDC)")
     parser.add_argument("--output", type=str, default="grabacion.wav", help="Archivo de salida (ej. audio.wav)")
+    parser.add_argument("--cutoff", type=float, default=7000.0, help="Frecuencia de corte del filtro pasa bajos (Hz)")
     args = parser.parse_args()
 
     try:
@@ -38,6 +40,14 @@ def main():
         return
 
     ola_buffer = np.zeros(256, dtype=np.float32)
+
+    # Inicialización del filtro pasa bajos (Butterworth)
+    nyq = 16000 / 2.0
+    if args.cutoff > 0 and args.cutoff < nyq:
+        b, a = scipy_signal.butter(4, args.cutoff / nyq, btype='low')
+        zi = scipy_signal.lfilter_zi(b, a)
+    else:
+        b, a, zi = None, None, None
 
     # Iniciar el stream de parlantes
     stream = sd.OutputStream(
@@ -93,8 +103,11 @@ def main():
                     audio_out = signal[:256] + ola_buffer
                     ola_buffer = signal[256:]
                     
+                    if b is not None:
+                        audio_out, zi = scipy_signal.lfilter(b, a, audio_out, zi=zi)
+                    
                     # 1. Guardar para el .WAV (escalado)
-                    scaled_for_wav = np.clip(audio_out / 512.0, -1.0, 1.0)
+                    scaled_for_wav = np.clip(audio_out, -1.0, 1.0)
                     recorded_audio.append(scaled_for_wav)
                     
                     # 2. Mandar a los parlantes en tiempo real

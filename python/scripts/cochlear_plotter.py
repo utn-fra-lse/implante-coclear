@@ -5,7 +5,7 @@ import queue
 import numpy as np
 import pyqtgraph as pg
 import sounddevice as sd
-from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout
+from PyQt6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QCheckBox, QLabel
 from PyQt6.QtCore import QThread, pyqtSignal
 
 # Cola para reproducir el vocoder en tiempo real
@@ -18,7 +18,7 @@ def audio_callback(outdata, frames, time, status):
     try:
         data = audio_queue.get_nowait()
         # Escalar con la ganancia multiplicadora
-        scaled = np.clip((data * GLOBAL_GAIN) / 512.0, -1.0, 1.0)
+        scaled = np.clip(data * GLOBAL_GAIN, -1.0, 1.0)
         outdata[:] = scaled.reshape(-1, 1)
     except queue.Empty:
         outdata[:] = np.zeros((frames, 1), dtype=np.float32)
@@ -26,15 +26,54 @@ def audio_callback(outdata, frames, time, status):
 class CochlearSimulatorThread(QThread):
     # Emite un array de 8 floats (las energías de cada banda)
     data_ready = pyqtSignal(np.ndarray)
+    status_message = pyqtSignal(str)
     
-    def __init__(self, port, baudrate, play_audio):
+    def __init__(self, port, baudrate, play_audio, auto_threshold_frames):
         super().__init__()
         self.port = port
         self.baudrate = baudrate
         self.play_audio = play_audio
+        self.auto_threshold_frames = auto_threshold_frames
         self.running = True
         self.ser = None
         self.ola_buffer = np.zeros(256, dtype=np.float32)
+
+        # Estado del Noise Gate
+        self.noise_gate_enabled = (auto_threshold_frames > 0)
+        self.threshold_value = 0.0
+        self.calibration_frames_count = 0
+        self.sum_rms = 0.0
+
+    def apply_noise_gate(self, mag):
+        if not self.noise_gate_enabled:
+            return mag
+
+        # Por el teorema de Parseval, el RMS calculado desde los bins crudos de la FFT
+        # viene escalado. Para que el valor sea equivalente al RMS temporal (y los dBFS 
+        # coincidan con la realidad), tenemos que dividir por sqrt(N), donde N=512.
+        rms = np.sqrt(np.mean(mag**2)) / np.sqrt(512)
+        
+        frames_to_calibrate = self.auto_threshold_frames if self.auto_threshold_frames > 0 else 62
+        
+        if self.calibration_frames_count < frames_to_calibrate:
+            self.sum_rms += rms
+            self.calibration_frames_count += 1
+            if self.calibration_frames_count == frames_to_calibrate:
+                self.threshold_value = (self.sum_rms / frames_to_calibrate) * 1.5
+                dbfs = 20 * np.log10(max(self.threshold_value, 1e-6) / 1.0)
+                if self.threshold_value < 0.01:
+                    rms_str = f"{self.threshold_value:.2e}"
+                else:
+                    rms_str = f"{self.threshold_value:.3f}"
+                msg = f"Umbral RMS: {rms_str}  ({dbfs:.1f} dBFS)"
+                print(f"\n[Noise Gate] Calibración terminada. {msg}\n")
+                self.status_message.emit(msg)
+            return np.zeros_like(mag)
+
+        if rms < self.threshold_value:
+            return np.zeros_like(mag)
+        
+        return mag
 
     def run(self):
         try:
@@ -106,6 +145,9 @@ class CochlearSimulatorThread(QThread):
                         imag_part = all_floats[256:]
                         mag = np.sqrt(real_part**2 + imag_part**2)
                         
+                        # Aplicar Noise Gate
+                        mag = self.apply_noise_gate(mag)
+                        
                         # 1. Calcular energía (promedio de magnitud) por cada una de las 8 bandas
                         band_energies = np.zeros(8, dtype=np.float32)
                         for i, (start, end) in enumerate(bands):
@@ -159,7 +201,7 @@ class CochlearSimulatorThread(QThread):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, port, baudrate, play_audio):
+    def __init__(self, port, baudrate, play_audio, auto_threshold_frames):
         super().__init__()
         self.setWindowTitle("Simulador de Implante Coclear - 8 Bandas Vocoder")
         self.resize(900, 500)
@@ -168,6 +210,16 @@ class MainWindow(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         layout = QVBoxLayout(central_widget)
+
+        # Controles del Noise Gate
+        self.checkbox_gate = QCheckBox("Activar Supresor de Ruido (Auto-calibrable)")
+        self.checkbox_gate.setChecked(auto_threshold_frames > 0)
+        self.checkbox_gate.toggled.connect(self.toggle_noise_gate)
+        layout.addWidget(self.checkbox_gate)
+
+        self.label_rms = QLabel("Umbral RMS: Calibrando..." if auto_threshold_frames > 0 else "Umbral RMS: Inactivo")
+        self.label_rms.setStyleSheet("color: #00ff88; font-weight: bold; font-size: 14px;")
+        layout.addWidget(self.label_rms)
 
         # Gráfico de Barras para las 8 Bandas
         self.plot_bands = pg.PlotWidget(title="Excitación de Electrodos (8 Bandas Logarítmicas)")
@@ -195,12 +247,24 @@ class MainWindow(QMainWindow):
         self.plot_bands.addItem(self.bar_chart)
 
         # Iniciar Hilo
-        self.thread = CochlearSimulatorThread(port, baudrate, play_audio)
+        self.thread = CochlearSimulatorThread(port, baudrate, play_audio, auto_threshold_frames)
         self.thread.data_ready.connect(self.update_bars)
+        self.thread.status_message.connect(self.label_rms.setText)
         self.thread.start()
 
     def update_bars(self, energies):
         self.bar_chart.setOpts(height=energies)
+
+    def toggle_noise_gate(self, checked):
+        if self.thread:
+            self.thread.noise_gate_enabled = checked
+            if checked:
+                print("\n[Noise Gate] Reiniciando calibración...\n")
+                self.thread.calibration_frames_count = 0
+                self.thread.sum_rms = 0.0
+                self.label_rms.setText("Umbral RMS: Calibrando...")
+            else:
+                self.label_rms.setText("Umbral RMS: Inactivo")
 
     def closeEvent(self, event):
         print("Cerrando simulador...")
@@ -214,13 +278,14 @@ def main():
     parser.add_argument("--baudrate", type=int, default=115200, help="Baud rate (ignored on USB CDC)")
     parser.add_argument("--play-audio", action="store_true", help="Escuchar la salida del Vocoder (Ruido Blanco Modulado)")
     parser.add_argument("--gain", type=float, default=1.0, help="Multiplicador de ganancia de audio (ej. 2.0, 10.0)")
+    parser.add_argument("--auto-threshold", type=int, default=0, help="N frames para calibrar ruido de fondo (0=desactivado)")
     args = parser.parse_args()
 
     global GLOBAL_GAIN
     GLOBAL_GAIN = args.gain
 
     app = QApplication(sys.argv)
-    window = MainWindow(args.port, args.baudrate, args.play_audio)
+    window = MainWindow(args.port, args.baudrate, args.play_audio, args.auto_threshold)
     window.show()
     sys.exit(app.exec())
 
