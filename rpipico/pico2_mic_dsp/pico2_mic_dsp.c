@@ -41,8 +41,11 @@ uint16_t * buffers[N_DATA_BUFFERS];
 volatile uint8_t write_index = 0;
 volatile uint8_t read_index = 0;
 volatile bool adc_running = false;
+uint16_t out_data[N_FILTERS];
 
-uint dma_chan;
+
+uint dma_chan_a;
+uint dma_chan_b;
 
 void core0_communication();
 void core1_fft();
@@ -52,18 +55,21 @@ void init_dma_with_irq(uint dma_chan);
 
 
 void dma_irq0_handler(void) {
-    // Clear the interrupt
-    dma_hw->ints0 = 1u << dma_chan;
-
-    write_index = (write_index + 1) % N_DATA_BUFFERS; // Move to the next buffer
-    // if (write_index == read_index) {
-    //     // Buffers are full -> stop ADC
-    //     adc_run(false);
-    //     adc_running = false;
-    //     adc_fifo_drain();
-    // }
-    // Seleccionar el nuevo buffer y iniciar la transferencia
-    dma_channel_set_write_addr(dma_chan, buffers[write_index], true);
+    if (dma_hw->ints0 & (1u << dma_chan_a)) {
+        dma_hw->ints0 = 1u << dma_chan_a; // Clear interrupt
+        write_index = (write_index + 1) % N_DATA_BUFFERS;
+        uint8_t next_buffer = (write_index + 1) % N_DATA_BUFFERS;
+        dma_channel_set_write_addr(dma_chan_a, buffers[next_buffer], false);
+        dma_channel_set_trans_count(dma_chan_a, RAW_DMA_BLOCK_SIZE, false);
+    }
+    
+    if (dma_hw->ints0 & (1u << dma_chan_b)) {
+        dma_hw->ints0 = 1u << dma_chan_b; // Clear interrupt
+        write_index = (write_index + 1) % N_DATA_BUFFERS;
+        uint8_t next_buffer = (write_index + 1) % N_DATA_BUFFERS;
+        dma_channel_set_write_addr(dma_chan_b, buffers[next_buffer], false);
+        dma_channel_set_trans_count(dma_chan_b, RAW_DMA_BLOCK_SIZE, false);
+    }
 }
 
 int main()
@@ -79,7 +85,7 @@ int main()
     
     
     for (uint8_t i = 0; i < N_DATA_BUFFERS; ++i) {
-        buffers[i] = (uint16_t *) malloc(DMA_BLOCK_SIZE * sizeof(uint16_t));
+        buffers[i] = (uint16_t *) malloc(RAW_DMA_BLOCK_SIZE * sizeof(uint16_t));
 
         if (!buffers[i]) {
             printf("[CORE 0] Failed to allocate memory for buffer %d\n", i);
@@ -90,8 +96,9 @@ int main()
     printf("[CORE 0] Config DMA\n");
     // Set up the DMA to start transferring data as soon as it appears in FIFO
     init_adc_clkdiv((uint16_t) (ADC_CLK_HZ / 1000));
-    dma_chan = dma_claim_unused_channel(true);
-    init_dma_with_irq(dma_chan);
+    dma_chan_a = dma_claim_unused_channel(true);
+    dma_chan_b = dma_claim_unused_channel(true);
+    init_dma_with_irq(dma_chan_a);
     
     // Inicializar colas ANTES de lanzar el core 1 para evitar race conditions
     queue_init(&queue_usb, sizeof(float32_t *), 2);
@@ -141,29 +148,34 @@ void init_adc_clkdiv(uint16_t adc_clk_khz) {
     adc_set_clkdiv(48000.0f / (float) (adc_clk_khz));
 }
 
-void init_dma_with_irq(uint dma_chan) {
-    dma_channel_config cfg = dma_channel_get_default_config(dma_chan);
+void init_dma_with_irq(uint dummy) {
+    dma_channel_config cfg_a = dma_channel_get_default_config(dma_chan_a);
+    channel_config_set_transfer_data_size(&cfg_a, DMA_SIZE_16);
+    channel_config_set_read_increment(&cfg_a, false);
+    channel_config_set_write_increment(&cfg_a, true);
+    channel_config_set_dreq(&cfg_a, DREQ_ADC);
+    channel_config_set_chain_to(&cfg_a, dma_chan_b); // CHAIN A -> B
 
-    // Reading from constant address, writing to incrementing byte addresses
-    channel_config_set_transfer_data_size(&cfg, DMA_SIZE_16);
-    channel_config_set_read_increment(&cfg, false);
-    channel_config_set_write_increment(&cfg, true);
-    // Pace transfers based on availability of ADC samples
-    channel_config_set_dreq(&cfg, DREQ_ADC);
+    dma_channel_config cfg_b = dma_channel_get_default_config(dma_chan_b);
+    channel_config_set_transfer_data_size(&cfg_b, DMA_SIZE_16);
+    channel_config_set_read_increment(&cfg_b, false);
+    channel_config_set_write_increment(&cfg_b, true);
+    channel_config_set_dreq(&cfg_b, DREQ_ADC);
+    channel_config_set_chain_to(&cfg_b, dma_chan_a); // CHAIN B -> A
 
-    // Tell the DMA to raise IRQ line 0 when the channel finishes a block
-    dma_channel_set_irq0_enabled(dma_chan, true);
+    dma_channel_set_irq0_enabled(dma_chan_a, true);
+    dma_channel_set_irq0_enabled(dma_chan_b, true);
     irq_set_exclusive_handler(DMA_IRQ_0, dma_irq0_handler);
     irq_set_enabled(DMA_IRQ_0, true);
+
     adc_run(true);
     adc_running = true;
 
-    dma_channel_configure(dma_chan, &cfg,
-        buffers[write_index],    // dst
-        &adc_hw->fifo,  // src
-        DMA_BLOCK_SIZE, // transfer count
-        true            // start immediately
-    );
+    // Configurar B sin iniciar (listo para cuando A termine)
+    dma_channel_configure(dma_chan_b, &cfg_b, buffers[1], &adc_hw->fifo, RAW_DMA_BLOCK_SIZE, false);
+    
+    // Iniciar A
+    dma_channel_configure(dma_chan_a, &cfg_a, buffers[0], &adc_hw->fifo, RAW_DMA_BLOCK_SIZE, true);
 }
 
 void core0_communication(){
@@ -191,7 +203,7 @@ void core0_communication(){
             // Formateo de los datos en el Core 0
             usb_packet.sync[0] = 0xAA;
             usb_packet.sync[1] = 0x55;
-            usb_packet.sample_rate = ADC_CLK_HZ;
+            usb_packet.sample_rate = EFFECTIVE_SAMPLE_RATE;
             usb_packet.num_bins = FFT_SIZE / 2;
             
 #if MOCK_USB_DATA
@@ -223,8 +235,6 @@ void core1_fft() {
     float32_t * magnitudes = (float32_t *)  malloc((FFT_SIZE / 2) * sizeof(float32_t));
     
     uint32_t last_time = time_us_32();
-
-    uint16_t out_data[N_FILTERS];
     
     if (!new_samples || !sliding_window || !fft_input || !magnitudes || !fft_real || !fft_imag) {
         printf("[CORE 1] Failed to allocate memory for FFT buffers\n");
@@ -250,7 +260,7 @@ void core1_fft() {
         #ifdef __MEASURE_FFT_TIME__
         absolute_time_t start_time = get_absolute_time();
         #endif
-        dsp_normalize_buffer(buffers[read_index], new_samples, DMA_BLOCK_SIZE);
+        dsp_decimate_and_normalize(buffers[read_index], new_samples, DMA_BLOCK_SIZE);
         
         arm_biquad_cascade_df1_f32(&IIR_HPF_input_instance, new_samples, new_samples, DMA_BLOCK_SIZE);
         arm_biquad_cascade_df1_f32(&IIR_LPF_input_instance, new_samples, new_samples, DMA_BLOCK_SIZE);

@@ -1,9 +1,11 @@
 #include "dsp.h"
 
-// Coeficientes calculados para HPF Fc ≈ 15Hz @ Fs = 16kHz
-// Estructura CMSIS-DSP: b0, b1, b2, a1, a2
-float filter_highpass_15Hz_coeffs[5] = {
-    0.99706340f, -0.99706340f, 0.00000000f, 0.99412679f, 0.00000000f, // Sección 1
+// Coeficientes calculados para HPF Butterworth 4to Orden Fc ≈ 250Hz @ Fs = 16kHz
+// Filtra el hum de la red electrica (50/60Hz) con muchisima mayor agresividad (-24dB/octava)
+// Estructura CMSIS-DSP: b0, b1, b2, a1, a2 (2 etapas)
+float filter_highpass_250Hz_coeffs[10] = {
+    0.8795613790064433f, -1.7591227580128865f, 0.8795613790064433f, 1.8250960051409633f, -0.8339268642555546f,
+    1.0f, -2.0f, 1.0f, 1.9184107565980042f, -0.927693125891298f,
 };
 
 // Fc : 6000 
@@ -14,8 +16,8 @@ static const float filter_lowpass_6000Hz[5] = {
 };
 
 // Estado del filtro (tamaño: 4 * INPUT_FILTER_STAGES)
-static float32_t hpf_iir_state[4 * INPUT_FILTER_STAGES];
-static float32_t lpf_iir_state[4 * INPUT_FILTER_STAGES];
+static float32_t hpf_iir_state[4 * HPF_FILTER_STAGES];
+static float32_t lpf_iir_state[4 * LPF_FILTER_STAGES];
 arm_biquad_casd_df1_inst_f32 IIR_HPF_input_instance;
 arm_biquad_casd_df1_inst_f32 IIR_LPF_input_instance;
 
@@ -25,8 +27,8 @@ static float32_t hanning_window[FFT_SIZE];
  * @brief Inicializa los filtros IIR
  */
 void init_filters() {
-    arm_biquad_cascade_df1_init_f32(&IIR_HPF_input_instance, INPUT_FILTER_STAGES, (float32_t *)filter_highpass_15Hz_coeffs, hpf_iir_state);
-    arm_biquad_cascade_df1_init_f32(&IIR_LPF_input_instance, INPUT_FILTER_STAGES, (float32_t *)filter_lowpass_6000Hz, lpf_iir_state);
+    arm_biquad_cascade_df1_init_f32(&IIR_HPF_input_instance, HPF_FILTER_STAGES, (float32_t *)filter_highpass_250Hz_coeffs, hpf_iir_state);
+    arm_biquad_cascade_df1_init_f32(&IIR_LPF_input_instance, LPF_FILTER_STAGES, (float32_t *)filter_lowpass_6000Hz, lpf_iir_state);
     arm_hanning_f32(hanning_window, FFT_SIZE);
 }
 
@@ -47,15 +49,22 @@ void dsp_unpack_cmsis_fft(float32_t *fft_buffer) {
 }
 
 /**
- * @brief Normaliza un buffer de datos de 8 bits a un rango de [-1.0, 1.0]
- * @param buffer[in] Buffer de datos de entrada (uint8_t)
- * @param normalized_buffer[out] Buffer de salida normalizado (float32_t)
- * @param size Tamaño del buffer
+ * @brief Diezma y normaliza en un solo paso, preservando la resolución extra.
+ * @param src Buffer crudo del ADC (tamaño: size * OVERSAMPLING_FACTOR)
+ * @param dst Buffer normalizado en floats [-1.0, 1.0] (tamaño: size)
+ * @param size Cantidad de muestras de salida deseadas
  */
-void dsp_normalize_buffer(uint16_t *buffer, float32_t *normalized_buffer, uint16_t size) {
-    // Normalize the buffer to the range [-1.0, 1.0]
+void dsp_decimate_and_normalize(uint16_t *src, float32_t *dst, uint16_t size) {
     for (uint16_t i = 0; i < size; ++i) {
-        normalized_buffer[i] = (float32_t) (buffer[i] - MIC_OFFSET) / MIC_SCALE;
+        uint32_t sum = 0;
+        for (uint16_t j = 0; j < OVERSAMPLING_FACTOR; ++j) {
+            sum += src[i * OVERSAMPLING_FACTOR + j];
+        }
+        // Promedio exacto en float para retener la resolución extra (los 2 bits extras)
+        float32_t average = (float32_t)sum / (float32_t)OVERSAMPLING_FACTOR;
+        
+        // Normalización al rango [-1.0, 1.0]
+        dst[i] = (average - MIC_OFFSET) / MIC_SCALE;
     }
 }
 
@@ -82,8 +91,8 @@ void split_complex_array(float32_t *complex_array, float32_t *real_array, float3
  */
 float32_t dsp_get_filtered_range(float32_t *src, uint32_t min_freq, uint32_t max_freq) {
 
-    uint16_t start_bin = (uint16_t) min_freq * FFT_SIZE / ADC_CLK_HZ;
-    uint16_t end_bin = (uint16_t) max_freq * FFT_SIZE / ADC_CLK_HZ;
+    uint16_t start_bin = (uint16_t) min_freq * FFT_SIZE / EFFECTIVE_SAMPLE_RATE;
+    uint16_t end_bin = (uint16_t) max_freq * FFT_SIZE / EFFECTIVE_SAMPLE_RATE;
     uint16_t size = end_bin - start_bin;
     float32_t dst_temp = 0.0f;
 
