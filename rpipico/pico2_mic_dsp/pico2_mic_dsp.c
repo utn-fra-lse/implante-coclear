@@ -102,7 +102,7 @@ int main()
     
     // Inicializar colas ANTES de lanzar el core 1 para evitar race conditions
     queue_init(&queue_usb, sizeof(float32_t *), 2);
-    queue_init(&queue, sizeof(uint16_t *), 1);
+    queue_init(&queue, sizeof(uint16_t *) * N_FILTERS, 1);
     
     // Start core1
     multicore_launch_core1(core1_fft);
@@ -183,22 +183,23 @@ void core0_communication(){
     float32_t *rx_fft_data = NULL;
     fft_usb_packet_t usb_packet;
     
-    uint16_t *trama_data = NULL;
+    uint16_t trama_data[N_FILTERS];
     uint8_t bit_index = 0;
+    uint16_t electrode_data = 0;
 
     while(true) {
         
-        // if(queue_try_remove(&queue, &trama_data)) {
-        //     for(uint32_t i = 0; i < N_FILTERS; i++) {
-        //         uint16_t data = trama_b_generate(i, trama_data[i]);
-        //         // printf("%02d: 0x%04x\n", i, data); // COMENTADO: printf corrompe el stream binario USB
-        //         for(uint32_t j = 0; j < 16; j++) {
-        //             // Asigno la cantidad de pulsos segun si es 1 o 0
-        //             pio_tx_start(data & (1 << (15 - j)));
-        //             while(!pio_tx_is_done());
-        //         }
-        //     }
-        // }
+        if(queue_try_remove(&queue, trama_data)) {
+            for(uint8_t i = 0; i < N_FILTERS; i++) {
+                electrode_data = trama_b_generate(i, trama_data[i]);
+                // printf("%02d: 0x%04x\n", i, electrode_data); // COMENTADO: printf corrompe el stream binario USB
+                for(uint8_t j = 0; j < 16; j++) {
+                    // Asigno la cantidad de pulsos segun si es 1 o 0
+                    pio_tx_start(electrode_data & (1 << (15 - j)));
+                    while(!pio_tx_is_done());
+                }
+            }
+        }
         if(queue_try_remove(&queue_usb, &rx_fft_data)) {
             // Formateo de los datos en el Core 0
             usb_packet.sync[0] = 0xAA;
@@ -237,7 +238,7 @@ void core1_fft() {
     uint32_t last_time = time_us_32();
     
     if (!new_samples || !sliding_window || !fft_input || !magnitudes || !fft_real || !fft_imag) {
-        printf("[CORE 1] Failed to allocate memory for FFT buffers\n");
+        // printf("[CORE 1] Failed to allocate memory for FFT buffers\n");
         return;
     }
 
@@ -246,7 +247,7 @@ void core1_fft() {
     arm_rfft_fast_instance_f32 fft_instance;
     arm_status status = arm_rfft_fast_init_f32(&fft_instance, FFT_SIZE);
     while (status != ARM_MATH_SUCCESS) {
-        printf("[CORE 1] FFT init failed\n");
+        // printf("[CORE 1] FFT init failed\n");
         gpio_put(PICO_DEFAULT_LED_PIN, 1);
         sleep_ms(1000);
         status = arm_rfft_fast_init_f32(&fft_instance, FFT_SIZE);
@@ -306,7 +307,7 @@ void core1_fft() {
         #endif
 
         dsp_compute_estimulos(magnitudes, out_data);
-        queue_try_add(&queue, (void *) out_data);
+        queue_try_add(&queue, out_data);
         #ifdef GPIO_LATENCIA
         gpio_put(OSC_GPIO_PIN, !gpio_get(OSC_GPIO_PIN));
         #endif
