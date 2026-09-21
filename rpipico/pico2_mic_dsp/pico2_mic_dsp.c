@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "pico/stdlib.h"
 #include "pico/stdio_usb.h"
 #include "pico/multicore.h"
@@ -30,18 +31,29 @@ queue_t queue_usb;
 //#define TIME_TO_SEND_DATA_US 10000
 
 #define N_DATA_BUFFERS 3U
+#define DMA_BLOCK_SIZE (FFT_SIZE / 2)
 
 #define TX_GPIO 27
 
 #define GPIO_LATENCIA
 #define OSC_GPIO_PIN 5
 
-uint8_t * buffers[N_DATA_BUFFERS];
+uint16_t * buffers[N_DATA_BUFFERS];
 volatile uint8_t write_index = 0;
 volatile uint8_t read_index = 0;
 volatile bool adc_running = false;
+uint16_t out_data[N_FILTERS];
 
-uint dma_chan;
+// Mensaje encolado hacia el Core 0 vía queue_usb: agrupa en un solo puntero la FFT cruda
+// (ping-pongeada, ver core_comm_buffers en core1_fft) y una copia por valor de out_data
+// tomada en el mismo frame, para que ambos viajen sincronizados en el mismo paquete USB.
+typedef struct {
+    float32_t *fft_data;
+    uint16_t   band_energies[N_FILTERS];
+} usb_frame_msg_t;
+
+uint dma_chan_a;
+uint dma_chan_b;
 
 void core0_communication();
 void core1_fft();
@@ -51,18 +63,21 @@ void init_dma_with_irq(uint dma_chan);
 
 
 void dma_irq0_handler(void) {
-    // Clear the interrupt
-    dma_hw->ints0 = 1u << dma_chan;
-
-    write_index = (write_index + 1) % N_DATA_BUFFERS; // Move to the next buffer
-    if (write_index == read_index) {
-        // Buffers are full -> stop ADC
-        adc_run(false);
-        adc_running = false;
-        adc_fifo_drain();
+    if (dma_hw->ints0 & (1u << dma_chan_a)) {
+        dma_hw->ints0 = 1u << dma_chan_a; // Clear interrupt
+        write_index = (write_index + 1) % N_DATA_BUFFERS;
+        uint8_t next_buffer = (write_index + 1) % N_DATA_BUFFERS;
+        dma_channel_set_write_addr(dma_chan_a, buffers[next_buffer], false);
+        dma_channel_set_trans_count(dma_chan_a, RAW_DMA_BLOCK_SIZE, false);
     }
-    // Seleccionar el nuevo buffer y iniciar la transferencia
-    dma_channel_set_write_addr(dma_chan, buffers[write_index], true);
+    
+    if (dma_hw->ints0 & (1u << dma_chan_b)) {
+        dma_hw->ints0 = 1u << dma_chan_b; // Clear interrupt
+        write_index = (write_index + 1) % N_DATA_BUFFERS;
+        uint8_t next_buffer = (write_index + 1) % N_DATA_BUFFERS;
+        dma_channel_set_write_addr(dma_chan_b, buffers[next_buffer], false);
+        dma_channel_set_trans_count(dma_chan_b, RAW_DMA_BLOCK_SIZE, false);
+    }
 }
 
 int main()
@@ -78,7 +93,7 @@ int main()
     
     
     for (uint8_t i = 0; i < N_DATA_BUFFERS; ++i) {
-        buffers[i] = (uint8_t *) malloc(FFT_SIZE * sizeof(uint8_t));
+        buffers[i] = (uint16_t *) malloc(RAW_DMA_BLOCK_SIZE * sizeof(uint16_t));
 
         if (!buffers[i]) {
             printf("[CORE 0] Failed to allocate memory for buffer %d\n", i);
@@ -89,11 +104,12 @@ int main()
     printf("[CORE 0] Config DMA\n");
     // Set up the DMA to start transferring data as soon as it appears in FIFO
     init_adc_clkdiv((uint16_t) (ADC_CLK_HZ / 1000));
-    dma_chan = dma_claim_unused_channel(true);
-    init_dma_with_irq(dma_chan);
+    dma_chan_a = dma_claim_unused_channel(true);
+    dma_chan_b = dma_claim_unused_channel(true);
+    init_dma_with_irq(dma_chan_a);
     
     // Inicializar colas ANTES de lanzar el core 1 para evitar race conditions
-    queue_init(&queue_usb, sizeof(float32_t *), 2);
+    queue_init(&queue_usb, sizeof(usb_frame_msg_t *), 2);
     queue_init(&queue, sizeof(uint16_t *), 1);
     
     // Start core1
@@ -131,7 +147,7 @@ void init_adc_clkdiv(uint16_t adc_clk_khz) {
         true,    // Enable DMA data request (DREQ)
         1,       // DREQ (and IRQ) asserted when at least 1 sample present
         false,   // We won't see the ERR bit because of 8 bit reads; disable.
-        true     // Shift each sample to 8 bits when pushing to FIFO
+        false    // Do not shift to 8 bits, keep 12-bit values padded to 16 bits
     );
     adc_fifo_drain();
     
@@ -140,34 +156,39 @@ void init_adc_clkdiv(uint16_t adc_clk_khz) {
     adc_set_clkdiv(48000.0f / (float) (adc_clk_khz));
 }
 
-void init_dma_with_irq(uint dma_chan) {
-    dma_channel_config cfg = dma_channel_get_default_config(dma_chan);
+void init_dma_with_irq(uint dummy) {
+    dma_channel_config cfg_a = dma_channel_get_default_config(dma_chan_a);
+    channel_config_set_transfer_data_size(&cfg_a, DMA_SIZE_16);
+    channel_config_set_read_increment(&cfg_a, false);
+    channel_config_set_write_increment(&cfg_a, true);
+    channel_config_set_dreq(&cfg_a, DREQ_ADC);
+    channel_config_set_chain_to(&cfg_a, dma_chan_b); // CHAIN A -> B
 
-    // Reading from constant address, writing to incrementing byte addresses
-    channel_config_set_transfer_data_size(&cfg, DMA_SIZE_8);
-    channel_config_set_read_increment(&cfg, false);
-    channel_config_set_write_increment(&cfg, true);
-    // Pace transfers based on availability of ADC samples
-    channel_config_set_dreq(&cfg, DREQ_ADC);
+    dma_channel_config cfg_b = dma_channel_get_default_config(dma_chan_b);
+    channel_config_set_transfer_data_size(&cfg_b, DMA_SIZE_16);
+    channel_config_set_read_increment(&cfg_b, false);
+    channel_config_set_write_increment(&cfg_b, true);
+    channel_config_set_dreq(&cfg_b, DREQ_ADC);
+    channel_config_set_chain_to(&cfg_b, dma_chan_a); // CHAIN B -> A
 
-    // Tell the DMA to raise IRQ line 0 when the channel finishes a block
-    dma_channel_set_irq0_enabled(dma_chan, true);
+    dma_channel_set_irq0_enabled(dma_chan_a, true);
+    dma_channel_set_irq0_enabled(dma_chan_b, true);
     irq_set_exclusive_handler(DMA_IRQ_0, dma_irq0_handler);
     irq_set_enabled(DMA_IRQ_0, true);
+
     adc_run(true);
     adc_running = true;
 
-    dma_channel_configure(dma_chan, &cfg,
-        buffers[write_index],    // dst
-        &adc_hw->fifo,  // src
-        FFT_SIZE,       // transfer count
-        true            // start immediately
-    );
+    // Configurar B sin iniciar (listo para cuando A termine)
+    dma_channel_configure(dma_chan_b, &cfg_b, buffers[1], &adc_hw->fifo, RAW_DMA_BLOCK_SIZE, false);
+    
+    // Iniciar A
+    dma_channel_configure(dma_chan_a, &cfg_a, buffers[0], &adc_hw->fifo, RAW_DMA_BLOCK_SIZE, true);
 }
 
 void core0_communication(){
 
-    float32_t *rx_fft_data = NULL;
+    usb_frame_msg_t *rx_frame_msg = NULL;
     fft_usb_packet_t usb_packet;
     
     uint16_t *trama_data = NULL;
@@ -186,22 +207,25 @@ void core0_communication(){
         //         }
         //     }
         // }
-        if(queue_try_remove(&queue_usb, &rx_fft_data)) {
+        if(queue_try_remove(&queue_usb, &rx_frame_msg)) {
             // Formateo de los datos en el Core 0
             usb_packet.sync[0] = 0xAA;
             usb_packet.sync[1] = 0x55;
-            usb_packet.sample_rate = ADC_CLK_HZ;
+            usb_packet.sample_rate = EFFECTIVE_SAMPLE_RATE;
             usb_packet.num_bins = FFT_SIZE / 2;
-            
+
 #if MOCK_USB_DATA
             // Generar un patrón lineal simple para verificar
             for (uint16_t i = 0; i < FFT_SIZE / 2; i++) {
                 usb_packet.real_part[i] = (float)i;
                 usb_packet.imag_part[i] = (float)((FFT_SIZE / 2) - i);
             }
+            memset(usb_packet.band_energies, 0, sizeof(usb_packet.band_energies));
 #else
             // Dividir el array complejo en real e imaginario
-            split_complex_array(rx_fft_data, usb_packet.real_part, usb_packet.imag_part, FFT_SIZE / 2);
+            split_complex_array(rx_frame_msg->fft_data, usb_packet.real_part, usb_packet.imag_part, FFT_SIZE / 2);
+            // Energías por banda calculadas en el Core 1 (dsp_compute_estimulos), para validación en PC
+            memcpy(usb_packet.band_energies, rx_frame_msg->band_energies, sizeof(usb_packet.band_energies));
 #endif
             send_fft_data_usb(&usb_packet);
         }
@@ -211,17 +235,20 @@ void core0_communication(){
 void core1_fft() {
     uint8_t comm_index = 0;
     float32_t core_comm_buffers[2][FFT_SIZE];
-    float32_t * input_f32  = (float32_t *)  malloc(FFT_SIZE * sizeof(float32_t));
+    usb_frame_msg_t usb_frame_msgs[2]; // ping-pong, mismo índice que core_comm_buffers
+    float32_t * new_samples    = (float32_t *) malloc(DMA_BLOCK_SIZE * sizeof(float32_t));
+    float32_t * sliding_window = (float32_t *) malloc(FFT_SIZE * sizeof(float32_t));
+    float32_t * fft_input      = (float32_t *) malloc(FFT_SIZE * sizeof(float32_t));
+    
+    for(int i = 0; i < FFT_SIZE; i++) sliding_window[i] = 0.0f;
     // float32_t * fft_output = (float32_t *)  malloc(FFT_SIZE * sizeof(float32_t));
     float32_t * fft_real = (float32_t *)  malloc((FFT_SIZE / 2) * sizeof(float32_t));
     float32_t * fft_imag = (float32_t *)  malloc((FFT_SIZE / 2) * sizeof(float32_t));
     float32_t * magnitudes = (float32_t *)  malloc((FFT_SIZE / 2) * sizeof(float32_t));
     
     uint32_t last_time = time_us_32();
-
-    uint16_t out_data[N_FILTERS];
     
-    if (!input_f32 || !magnitudes || !fft_real || !fft_imag) {
+    if (!new_samples || !sliding_window || !fft_input || !magnitudes || !fft_real || !fft_imag) {
         printf("[CORE 1] Failed to allocate memory for FFT buffers\n");
         return;
     }
@@ -239,31 +266,33 @@ void core1_fft() {
     
 
     while (true) {
-        if(write_index == read_index && adc_running) {
-            sleep_ms(1); // Wait for data to be available
-            continue;
+        while(write_index == read_index && adc_running) {
+            __nop();
         }
         #ifdef __MEASURE_FFT_TIME__
         absolute_time_t start_time = get_absolute_time();
         #endif
-        // Normalize the buffer to [-1.0, 1.0] range
-        dsp_normalize_buffer(buffers[read_index], input_f32, FFT_SIZE);
+        dsp_decimate_and_normalize(buffers[read_index], new_samples, DMA_BLOCK_SIZE);
+        
+        arm_biquad_cascade_df1_f32(&IIR_HPF_input_instance, new_samples, new_samples, DMA_BLOCK_SIZE);
+        arm_biquad_cascade_df1_f32(&IIR_LPF_input_instance, new_samples, new_samples, DMA_BLOCK_SIZE);
 
-        // Filtro IIR pasa altos - Eliminar la continua
-        arm_biquad_cascade_df1_f32(&IIR_HPF_input_instance, input_f32, input_f32, FFT_SIZE);
+        for (uint16_t i = 0; i < DMA_BLOCK_SIZE; ++i) {
+            sliding_window[i] = sliding_window[i + DMA_BLOCK_SIZE];
+            sliding_window[i + DMA_BLOCK_SIZE] = new_samples[i];
+        }
+
+        for (uint16_t i = 0; i < FFT_SIZE; ++i) {
+            fft_input[i] = sliding_window[i];
+        }
+
+        window(fft_input, FFT_SIZE);
 
         float32_t *current_fft_out = core_comm_buffers[comm_index];
-        arm_rfft_fast_f32(&fft_instance, input_f32, current_fft_out, 0);
-        
-        // Enviar el puntero de datos crudos a través de la cola hacia el Core 0
-        #ifdef TIME_TO_SEND_DATA_US
-        if(time_us_32() - last_time > TIME_TO_SEND_DATA_US){
-            queue_try_add(&queue_usb, &current_fft_out);
-            last_time = time_us_32();
-        }
-        #else
-        queue_try_add(&queue_usb, &current_fft_out);
-        #endif
+        arm_rfft_fast_f32(&fft_instance, fft_input, current_fft_out, 0);
+
+        // Desempaquetar DC y eliminar Nyquist para que arm_cmplx_mag_f32 funcione bien
+        dsp_unpack_cmsis_fft(current_fft_out);
         
         // Compute magnitudes
         arm_cmplx_mag_f32(current_fft_out, magnitudes, FFT_SIZE / 2);
@@ -280,6 +309,20 @@ void core1_fft() {
 
         dsp_compute_estimulos(magnitudes, out_data);
         queue_try_add(&queue, (void *) out_data);
+
+        // Enviar la FFT cruda junto con las energías por banda del mismo frame, en un solo
+        // mensaje, a través de la cola hacia el Core 0 (que arma y manda el paquete USB).
+        usb_frame_msgs[comm_index].fft_data = current_fft_out;
+        memcpy(usb_frame_msgs[comm_index].band_energies, out_data, sizeof(out_data));
+        usb_frame_msg_t *msg_ptr = &usb_frame_msgs[comm_index];
+        #ifdef TIME_TO_SEND_DATA_US
+        if(time_us_32() - last_time > TIME_TO_SEND_DATA_US){
+            queue_try_add(&queue_usb, &msg_ptr);
+            last_time = time_us_32();
+        }
+        #else
+        queue_try_add(&queue_usb, &msg_ptr);
+        #endif
         #ifdef GPIO_LATENCIA
         gpio_put(OSC_GPIO_PIN, !gpio_get(OSC_GPIO_PIN));
         #endif
@@ -306,7 +349,7 @@ void core1_send_samples(void) {
         putchar_raw(0x55);
 
         // Enviar datos crudos
-        fwrite(buffers[read_index], sizeof(uint8_t), FFT_SIZE, stdout);
+        fwrite(buffers[read_index], sizeof(uint16_t), DMA_BLOCK_SIZE, stdout);
         fflush(stdout);
 
         read_index = (read_index + 1) % N_DATA_BUFFERS;

@@ -19,12 +19,17 @@ void generate_sample_buffer(uint8_t *buffer, uint16_t size, uint32_t sample_rate
 #define FFT_SIZE 512U
 #endif
 
+#ifndef N_BANDS
+#define N_BANDS 8   // Debe coincidir con N_FILTERS de dsp.h (dependencia intencional: utils no incluye dsp.h)
+#endif
+
 typedef struct __attribute__((packed, aligned(4))) {
     uint8_t  sync[2];       // 0xAA, 0x55
     uint16_t num_bins;
     uint32_t sample_rate;
     float    real_part[FFT_SIZE / 2];
     float    imag_part[FFT_SIZE / 2];
+    uint16_t band_energies[N_BANDS]; // Energía por banda calculada por dsp_compute_estimulos (out_data), para validación en PC
 } fft_usb_packet_t;
 
 void send_fft_data_usb(const fft_usb_packet_t *packet);
