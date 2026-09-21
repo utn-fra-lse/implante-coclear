@@ -56,7 +56,7 @@ def main():
         return
 
     buffer = bytearray()
-    packet_size = 2056
+    packet_size = 2072  # 2056 (header + FFT) + 16 (8 x uint16 band_energies del firmware)
     sync_header = b'\xAA\x55'
 
     try:
@@ -76,7 +76,7 @@ def main():
                 packet = buffer[idx : idx + packet_size]
                 buffer = buffer[idx + packet_size:]
                 
-                floats_data = packet[8:]
+                floats_data = packet[8:2056]  # el resto del paquete son band_energies, no usadas acá
                 all_floats = np.frombuffer(floats_data, dtype=np.float32)
                 
                 if len(all_floats) == 512:

@@ -12,6 +12,13 @@ from PyQt6.QtCore import QThread, pyqtSignal
 audio_queue = queue.Queue(maxsize=10)
 GLOBAL_GAIN = 1.0
 
+# Ganancia lineal provisoria que usa el firmware (dsp.h: ENERGY_TO_AMPLITUDE_GAIN) para
+# llevar la energía de banda a un uint16_t. Debe coincidir con el valor de dsp.h o esta
+# reversión queda mal escalada (ver ahí el historial: el techo original de 0.5 saturaba con
+# voz real, se subió a 16.0 tras medirse picos de ~7.16 con habla normal). NO es una curva de
+# sonoridad T/C real (eso requiere calibración por paciente/electrodo, todavía no existe).
+FIRMWARE_ENERGY_TO_AMPLITUDE_GAIN = 65535.0 / 16.0
+
 def audio_callback(outdata, frames, time, status):
     if status:
         print(f"Audio status: {status}")
@@ -24,8 +31,9 @@ def audio_callback(outdata, frames, time, status):
         outdata[:] = np.zeros((frames, 1), dtype=np.float32)
 
 class CochlearSimulatorThread(QThread):
-    # Emite un array de 8 floats (las energías de cada banda)
-    data_ready = pyqtSignal(np.ndarray)
+    # Emite dos arrays de 8 floats: energías calculadas en Python (band_energies) y la
+    # estimación de energía revertida desde lo que calculó y envió la Pico (firmware_energy)
+    data_ready = pyqtSignal(np.ndarray, np.ndarray)
     status_message = pyqtSignal(str)
     
     def __init__(self, port, baudrate, play_audio, auto_threshold_frames):
@@ -84,9 +92,10 @@ class CochlearSimulatorThread(QThread):
             return
 
         buffer = bytearray()
-        packet_size = 2056
+        packet_size = 2072  # 2056 (header + FFT) + 16 (8 x uint16 band_energies del firmware)
         sync_header = b'\xAA\x55'
         frame_count = 0
+        console_print_period = 60  # ~1 vez por segundo (fps efectivo ~62.5)
         stream = None
         
         if self.play_audio:
@@ -137,13 +146,17 @@ class CochlearSimulatorThread(QThread):
                     packet = buffer[idx : idx + packet_size]
                     buffer = buffer[idx + packet_size:]
                     
-                    floats_data = packet[8:]
+                    floats_data = packet[8:2056]
                     all_floats = np.frombuffer(floats_data, dtype=np.float32)
-                    
-                    if len(all_floats) == 512:
+                    firmware_bands_raw = np.frombuffer(packet[2056:2072], dtype=np.uint16)
+
+                    if len(all_floats) == 512 and len(firmware_bands_raw) == 8:
                         real_part = all_floats[:256]
                         imag_part = all_floats[256:]
                         mag = np.sqrt(real_part**2 + imag_part**2)
+                        # Revertimos el escalado del firmware para comparar en la misma escala
+                        # que band_energies (promedio de magnitud, no la amplitud de 16 bits)
+                        firmware_energy = firmware_bands_raw.astype(np.float32) / FIRMWARE_ENERGY_TO_AMPLITUDE_GAIN
                         
                         # Aplicar Noise Gate
                         mag = self.apply_noise_gate(mag)
@@ -179,10 +192,22 @@ class CochlearSimulatorThread(QThread):
                                 pass
                                 
                         frame_count += 1
-                        
+
+                        # Validación: comparar la energía calculada acá (independiente) contra
+                        # la que calculó y mandó la propia Pico, cada ~1 segundo.
+                        if frame_count % console_print_period == 0:
+                            print("\n[Validación bandas] Python vs Firmware (energía revertida)")
+                            print(f"{'banda':>6} {'python':>10} {'firmware':>10} {'error %':>10}")
+                            for i in range(8):
+                                py_e = band_energies[i]
+                                fw_e = firmware_energy[i]
+                                denom = py_e if py_e > 1e-9 else 1e-9
+                                error_pct = abs(fw_e - py_e) / denom * 100.0
+                                print(f"{i:>6} {py_e:>10.5f} {fw_e:>10.5f} {error_pct:>9.1f}%")
+
                         # Decimación UI (~3 FPS)
                         if frame_count % 1 == 0:
-                            self.data_ready.emit(band_energies)
+                            self.data_ready.emit(band_energies, firmware_energy)
                 else:
                     if idx > 0:
                         buffer = buffer[idx:]
@@ -236,15 +261,26 @@ class MainWindow(QMainWindow):
         self.plot_bands.getAxis('bottom').setTicks([band_labels])
         layout.addWidget(self.plot_bands)
 
-        # Crear el BarGraphItem (Barras de neón)
+        # Crear el BarGraphItem (Barras de neón) — energía calculada en Python (referencia)
         self.bar_chart = pg.BarGraphItem(
-            x=np.arange(1, 9), 
-            height=np.zeros(8), 
-            width=0.6, 
+            x=np.arange(1, 9) - 0.15,
+            height=np.zeros(8),
+            width=0.3,
             brush='#00ff88',  # Verde neón
             pen='#0d1117'
         )
         self.plot_bands.addItem(self.bar_chart)
+
+        # Segunda serie: energía calculada y enviada por el firmware (revertido el gain),
+        # para validar visualmente que coincide con la de Python.
+        self.bar_chart_firmware = pg.BarGraphItem(
+            x=np.arange(1, 9) + 0.15,
+            height=np.zeros(8),
+            width=0.3,
+            brush='#ff8800',  # Naranja
+            pen='#0d1117'
+        )
+        self.plot_bands.addItem(self.bar_chart_firmware)
 
         # Iniciar Hilo
         self.thread = CochlearSimulatorThread(port, baudrate, play_audio, auto_threshold_frames)
@@ -252,8 +288,9 @@ class MainWindow(QMainWindow):
         self.thread.status_message.connect(self.label_rms.setText)
         self.thread.start()
 
-    def update_bars(self, energies):
+    def update_bars(self, energies, firmware_energies):
         self.bar_chart.setOpts(height=energies)
+        self.bar_chart_firmware.setOpts(height=firmware_energies)
 
     def toggle_noise_gate(self, checked):
         if self.thread:

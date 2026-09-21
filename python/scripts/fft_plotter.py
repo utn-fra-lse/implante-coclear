@@ -104,7 +104,7 @@ class SerialReaderThread(QThread):
             return
 
         buffer = bytearray()
-        packet_size = 2056
+        packet_size = 2072  # 2056 (header + FFT) + 16 (8 x uint16 band_energies del firmware)
         sync_header = b'\xAA\x55'
         frame_count = 0
         stream = None
@@ -152,7 +152,7 @@ class SerialReaderThread(QThread):
                     
                     # Parse packet
                     # Ignorar sync (2), num_bins (2), sample_rate (4) = 8 bytes
-                    floats_data = packet[8:]
+                    floats_data = packet[8:2056]  # el resto del paquete son band_energies, no usadas acá
                     all_floats = np.frombuffer(floats_data, dtype=np.float32)
                     
                     if len(all_floats) == 512:
