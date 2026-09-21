@@ -120,7 +120,8 @@ class ScriptLauncherMenu(QMainWindow):
 
             # Frecuencia ADC
             fs_combo = QComboBox()
-            fs_combo.addItems(["8000", "16000", "24000", "32000", "48000", "64000"])
+            fs_combo.addItems(["8000", "16000", "32000", "64000"])
+            # fs_combo.addItems(["8000", "16000", "24000", "32000", "48000", "64000"])
             fs_combo.setCurrentText("16000")
             form_layout.addRow("Frecuencia ADC (Hz):", fs_combo)
             widgets['fs'] = fs_combo

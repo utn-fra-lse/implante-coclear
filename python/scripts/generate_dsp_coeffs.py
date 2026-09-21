@@ -7,9 +7,9 @@ from scipy import signal
 PRESET_SPECS = [
     {"fs": 8000,  "oversampling": 16, "adc_clk_hz": 128000},
     {"fs": 16000, "oversampling": 16, "adc_clk_hz": 256000},
-    {"fs": 24000, "oversampling": 16, "adc_clk_hz": 384000},
+    # {"fs": 24000, "oversampling": 16, "adc_clk_hz": 384000},
     {"fs": 32000, "oversampling": 8,  "adc_clk_hz": 256000},
-    {"fs": 48000, "oversampling": 8,  "adc_clk_hz": 384000},
+    # {"fs": 48000, "oversampling": 8,  "adc_clk_hz": 384000},
     {"fs": 64000, "oversampling": 4,  "adc_clk_hz": 256000},
 ]
 

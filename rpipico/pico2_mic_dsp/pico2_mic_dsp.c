@@ -290,13 +290,13 @@ void core0_communication(){
         }
         
         if(queue_try_remove(&queue, trama_data)) {
-            for(uint8_t i = 0; i < N_FILTERS; i++) {
-                electrode_data = trama_b_generate(i, trama_data[i]);
-                // printf("%02d: 0x%04x\n", i, electrode_data); // COMENTADO: printf corrompe el stream binario USB
-                for(uint8_t j = 0; j < 16; j++) {
-                    // Asigno la cantidad de pulsos segun si es 1 o 0
-                    pio_tx_start(electrode_data & (1 << (15 - j)));
-                    while(!pio_tx_is_done());
+            if (pio_tx_is_done()) {
+                for(uint8_t i = 0; i < N_FILTERS; i++) {
+                    electrode_data = trama_b_generate(i, trama_data[i]);
+                    for(uint8_t j = 0; j < 16; j++) {
+                        pio_tx_start(electrode_data & (1 << (15 - j)));
+                        while(!pio_tx_is_done());
+                    }
                 }
             }
         }
