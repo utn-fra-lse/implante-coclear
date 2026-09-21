@@ -6,9 +6,9 @@ Preliminarmente se van a realizar saltos de 8kHz hasta llegar a 32kHz o 16kHz ha
 
 ### Criterios de aceptación
 
-- [ ] Ajustar el script para que se pueda modificar la frecuencia del ADC, manteniendo el flujo de adquisicion y procesamiento.
-- [ ] Calcular y cargar los coeficientes de los distintos niveles
-- [ ] Armar la posibilidad de variar la frecuencia de muestreo de forma dinamica por medio de UART/USB
+- [x] Ajustar el script para que se pueda modificar la frecuencia del ADC, manteniendo el flujo de adquisicion y procesamiento.
+- [x] Calcular y cargar los coeficientes de los distintos niveles
+- [x] Armar la posibilidad de variar la frecuencia de muestreo de forma dinamica por medio de UART/USB
 
 ### Contexto técnico / referencias
 

@@ -25,6 +25,7 @@ def main():
     parser.add_argument("port", type=str, help="Puerto serial (ej. COM3)")
     parser.add_argument("--baudrate", type=int, default=115200, help="Baud rate")
     parser.add_argument("--gain", type=float, default=1.0, help="Ganancia de audio")
+    parser.add_argument("--fs", type=int, default=16000, help="Frecuencia de muestreo ADC deseada en Hz (8000..64000)")
     args = parser.parse_args()
 
     global GLOBAL_GAIN

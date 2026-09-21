@@ -1,34 +1,47 @@
 #include "dsp.h"
 
-// Coeficientes calculados para HPF Butterworth 4to Orden Fc ≈ 250Hz @ Fs = 16kHz
-// Filtra el hum de la red electrica (50/60Hz) con muchisima mayor agresividad (-24dB/octava)
-// Estructura CMSIS-DSP: b0, b1, b2, a1, a2 (2 etapas)
-float filter_highpass_250Hz_coeffs[10] = {
-    0.8795613790064433f, -1.7591227580128865f, 0.8795613790064433f, 1.8250960051409633f, -0.8339268642555546f,
-    1.0f, -2.0f, 1.0f, 1.9184107565980042f, -0.927693125891298f,
-};
-
-// Fc : 6000 
-// Filtro: filter_lowpass_6000Hz
-// Formato de coeficientes: {b0, b1, b2, a1, a2} (a0=1.0 implícito)
-static const float filter_lowpass_6000Hz[5] = {
-    0.50000000f, 0.50000000f, 0.00000000f, -0.00000000f, 0.00000000f, // Sección 1
-};
-
-// Estado del filtro (tamaño: 4 * INPUT_FILTER_STAGES)
 static float32_t hpf_iir_state[4 * HPF_FILTER_STAGES];
 static float32_t lpf_iir_state[4 * LPF_FILTER_STAGES];
 arm_biquad_casd_df1_inst_f32 IIR_HPF_input_instance;
 arm_biquad_casd_df1_inst_f32 IIR_LPF_input_instance;
 
 static float32_t hanning_window[FFT_SIZE];
- 
+static uint32_t current_sample_rate = 16000U;
+static uint8_t current_oversampling_factor = 16U;
+
 /**
- * @brief Inicializa los filtros IIR
+ * @brief Cambia la frecuencia de muestreo activa y actualiza las instancias de filtros IIR.
+ */
+bool dsp_set_sample_rate(uint32_t fs) {
+    const dsp_preset_t *preset = dsp_get_preset(fs);
+    if (!preset) {
+        return false;
+    }
+    
+    memset(hpf_iir_state, 0, sizeof(hpf_iir_state));
+    memset(lpf_iir_state, 0, sizeof(lpf_iir_state));
+    
+    arm_biquad_cascade_df1_init_f32(&IIR_HPF_input_instance, HPF_FILTER_STAGES, (float32_t *)preset->hpf_coeffs, hpf_iir_state);
+    arm_biquad_cascade_df1_init_f32(&IIR_LPF_input_instance, LPF_FILTER_STAGES, (float32_t *)preset->lpf_coeffs, lpf_iir_state);
+    
+    current_sample_rate = preset->sample_rate;
+    current_oversampling_factor = preset->oversampling_factor;
+    return true;
+}
+
+uint32_t dsp_get_current_sample_rate(void) {
+    return current_sample_rate;
+}
+
+uint8_t dsp_get_current_oversampling(void) {
+    return current_oversampling_factor;
+}
+
+/**
+ * @brief Inicializa los filtros IIR y la ventana Hanning
  */
 void init_filters() {
-    arm_biquad_cascade_df1_init_f32(&IIR_HPF_input_instance, HPF_FILTER_STAGES, (float32_t *)filter_highpass_250Hz_coeffs, hpf_iir_state);
-    arm_biquad_cascade_df1_init_f32(&IIR_LPF_input_instance, LPF_FILTER_STAGES, (float32_t *)filter_lowpass_6000Hz, lpf_iir_state);
+    dsp_set_sample_rate(16000U);
     arm_hanning_f32(hanning_window, FFT_SIZE);
 }
 
@@ -50,20 +63,19 @@ void dsp_unpack_cmsis_fft(float32_t *fft_buffer) {
 
 /**
  * @brief Diezma y normaliza en un solo paso, preservando la resolución extra.
- * @param src Buffer crudo del ADC (tamaño: size * OVERSAMPLING_FACTOR)
+ * @param src Buffer crudo del ADC (tamaño: size * oversampling)
  * @param dst Buffer normalizado en floats [-1.0, 1.0] (tamaño: size)
  * @param size Cantidad de muestras de salida deseadas
+ * @param oversampling Factor de oversampling (ej. 16, 8, 4)
  */
-void dsp_decimate_and_normalize(uint16_t *src, float32_t *dst, uint16_t size) {
+void dsp_decimate_and_normalize(uint16_t *src, float32_t *dst, uint16_t size, uint8_t oversampling) {
+    if (oversampling == 0) oversampling = 1;
     for (uint16_t i = 0; i < size; ++i) {
         uint32_t sum = 0;
-        for (uint16_t j = 0; j < OVERSAMPLING_FACTOR; ++j) {
-            sum += src[i * OVERSAMPLING_FACTOR + j];
+        for (uint16_t j = 0; j < oversampling; ++j) {
+            sum += src[i * oversampling + j];
         }
-        // Promedio exacto en float para retener la resolución extra (los 2 bits extras)
-        float32_t average = (float32_t)sum / (float32_t)OVERSAMPLING_FACTOR;
-        
-        // Normalización al rango [-1.0, 1.0]
+        float32_t average = (float32_t)sum / (float32_t)oversampling;
         dst[i] = (average - MIC_OFFSET) / MIC_SCALE;
     }
 }

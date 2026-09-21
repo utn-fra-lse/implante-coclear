@@ -42,6 +42,8 @@ uint16_t * buffers[N_DATA_BUFFERS];
 volatile uint8_t write_index = 0;
 volatile uint8_t read_index = 0;
 volatile bool adc_running = false;
+volatile bool is_reconfiguring = false;
+volatile uint16_t current_raw_dma_block_size = RAW_DMA_BLOCK_SIZE;
 uint16_t out_data[N_FILTERS];
 
 // Mensaje encolado hacia el Core 0 vía queue_usb: agrupa en un solo puntero la FFT cruda
@@ -68,7 +70,7 @@ void dma_irq0_handler(void) {
         write_index = (write_index + 1) % N_DATA_BUFFERS;
         uint8_t next_buffer = (write_index + 1) % N_DATA_BUFFERS;
         dma_channel_set_write_addr(dma_chan_a, buffers[next_buffer], false);
-        dma_channel_set_trans_count(dma_chan_a, RAW_DMA_BLOCK_SIZE, false);
+        dma_channel_set_trans_count(dma_chan_a, current_raw_dma_block_size, false);
     }
     
     if (dma_hw->ints0 & (1u << dma_chan_b)) {
@@ -76,7 +78,7 @@ void dma_irq0_handler(void) {
         write_index = (write_index + 1) % N_DATA_BUFFERS;
         uint8_t next_buffer = (write_index + 1) % N_DATA_BUFFERS;
         dma_channel_set_write_addr(dma_chan_b, buffers[next_buffer], false);
-        dma_channel_set_trans_count(dma_chan_b, RAW_DMA_BLOCK_SIZE, false);
+        dma_channel_set_trans_count(dma_chan_b, current_raw_dma_block_size, false);
     }
 }
 
@@ -96,12 +98,12 @@ int main()
         buffers[i] = (uint16_t *) malloc(RAW_DMA_BLOCK_SIZE * sizeof(uint16_t));
 
         if (!buffers[i]) {
-            printf("[CORE 0] Failed to allocate memory for buffer %d\n", i);
+            // printf("[CORE 0] Failed to allocate memory for buffer %d\n", i);
             return -1;
         }
     }
 
-    printf("[CORE 0] Config DMA\n");
+    // printf("[CORE 0] Config DMA\n");
     // Set up the DMA to start transferring data as soon as it appears in FIFO
     init_adc_clkdiv((uint16_t) (ADC_CLK_HZ / 1000));
     dma_chan_a = dma_claim_unused_channel(true);
@@ -151,9 +153,10 @@ void init_adc_clkdiv(uint16_t adc_clk_khz) {
     );
     adc_fifo_drain();
     
-    // It should be 0 or > 95, if 0 < div < 95 then div = 96
-    // This is all timed by the 48 MHz ADC clock.
-    adc_set_clkdiv(48000.0f / (float) (adc_clk_khz));
+    // El timer del ADC de la Pico calcula periodos de (1 + clkdiv) ciclos a 48 MHz.
+    float div_val = (48000.0f / (float)adc_clk_khz) - 1.0f;
+    if (div_val < 0.0f) div_val = 0.0f;
+    adc_set_clkdiv(div_val);
 }
 
 void init_dma_with_irq(uint dummy) {
@@ -180,10 +183,84 @@ void init_dma_with_irq(uint dummy) {
     adc_running = true;
 
     // Configurar B sin iniciar (listo para cuando A termine)
-    dma_channel_configure(dma_chan_b, &cfg_b, buffers[1], &adc_hw->fifo, RAW_DMA_BLOCK_SIZE, false);
+    dma_channel_configure(dma_chan_b, &cfg_b, buffers[1], &adc_hw->fifo, current_raw_dma_block_size, false);
     
     // Iniciar A
-    dma_channel_configure(dma_chan_a, &cfg_a, buffers[0], &adc_hw->fifo, RAW_DMA_BLOCK_SIZE, true);
+    dma_channel_configure(dma_chan_a, &cfg_a, buffers[0], &adc_hw->fifo, current_raw_dma_block_size, true);
+}
+
+void change_sample_rate(uint32_t fs) {
+    const dsp_preset_t *preset = dsp_get_preset(fs);
+    if (!preset) return;
+    
+    // 1. Marcar reconfiguración y detener ADC
+    is_reconfiguring = true;
+    adc_run(false);
+    adc_running = false;
+    
+    // 2. Deshabilitar IRQs y abortar transferencias DMA activas
+    irq_set_enabled(DMA_IRQ_0, false);
+    dma_channel_abort(dma_chan_a);
+    dma_channel_abort(dma_chan_b);
+    dma_hw->ints0 = (1u << dma_chan_a) | (1u << dma_chan_b);
+    adc_fifo_drain();
+    
+    // 3. Resetear índices de buffers
+    write_index = 0;
+    read_index = 0;
+    
+    // 4. Configurar nuevo reloj ADC y parámetros DSP / DMA
+    float div_val = (48000000.0f / ((float)preset->adc_clk_khz * 1000.0f)) - 1.0f;
+    if (div_val < 0.0f) div_val = 0.0f;
+    adc_set_clkdiv(div_val);
+    
+    dsp_set_sample_rate(preset->sample_rate);
+    current_raw_dma_block_size = (FFT_SIZE / 2) * preset->oversampling_factor;
+    
+    // 5. Re-inicializar configuraciones DMA
+    dma_channel_config cfg_a = dma_channel_get_default_config(dma_chan_a);
+    channel_config_set_transfer_data_size(&cfg_a, DMA_SIZE_16);
+    channel_config_set_read_increment(&cfg_a, false);
+    channel_config_set_write_increment(&cfg_a, true);
+    channel_config_set_dreq(&cfg_a, DREQ_ADC);
+    channel_config_set_chain_to(&cfg_a, dma_chan_b);
+
+    dma_channel_config cfg_b = dma_channel_get_default_config(dma_chan_b);
+    channel_config_set_transfer_data_size(&cfg_b, DMA_SIZE_16);
+    channel_config_set_read_increment(&cfg_b, false);
+    channel_config_set_write_increment(&cfg_b, true);
+    channel_config_set_dreq(&cfg_b, DREQ_ADC);
+    channel_config_set_chain_to(&cfg_b, dma_chan_a);
+
+    dma_channel_configure(dma_chan_b, &cfg_b, buffers[1], &adc_hw->fifo, current_raw_dma_block_size, false);
+    dma_channel_configure(dma_chan_a, &cfg_a, buffers[0], &adc_hw->fifo, current_raw_dma_block_size, true);
+    
+    // 6. Re-habilitar IRQ y encender ADC
+    irq_set_enabled(DMA_IRQ_0, true);
+    adc_run(true);
+    adc_running = true;
+    is_reconfiguring = false;
+}
+
+static void parse_cmd_and_change_fs(const char *buf) {
+    char lower[64];
+    uint8_t i = 0;
+    while (buf[i] && i < 63) {
+        lower[i] = (buf[i] >= 'A' && buf[i] <= 'Z') ? (buf[i] + 32) : buf[i];
+        i++;
+    }
+    lower[i] = '\0';
+    
+    if (strstr(lower, "set") || strstr(lower, "fs")) {
+        char *p = lower;
+        while (*p && (*p < '0' || *p > '9')) p++;
+        if (*p >= '0' && *p <= '9') {
+            uint32_t new_fs = (uint32_t)atoi(p);
+            if (new_fs > 0) {
+                change_sample_rate(new_fs);
+            }
+        }
+    }
 }
 
 void core0_communication(){
@@ -195,7 +272,22 @@ void core0_communication(){
     uint8_t bit_index = 0;
     uint16_t electrode_data = 0;
 
+    static char cmd_buf[32];
+    static uint8_t cmd_idx = 0;
+
     while(true) {
+        int c = getchar_timeout_us(0);
+        if (c != PICO_ERROR_TIMEOUT) {
+            if (c == '\n' || c == '\r') {
+                if (cmd_idx > 0) {
+                    cmd_buf[cmd_idx] = '\0';
+                    parse_cmd_and_change_fs(cmd_buf);
+                }
+                cmd_idx = 0;
+            } else if (cmd_idx < sizeof(cmd_buf) - 1) {
+                cmd_buf[cmd_idx++] = (char)c;
+            }
+        }
         
         if(queue_try_remove(&queue, trama_data)) {
             for(uint8_t i = 0; i < N_FILTERS; i++) {
@@ -212,7 +304,7 @@ void core0_communication(){
             // Formateo de los datos en el Core 0
             usb_packet.sync[0] = 0xAA;
             usb_packet.sync[1] = 0x55;
-            usb_packet.sample_rate = EFFECTIVE_SAMPLE_RATE;
+            usb_packet.sample_rate = dsp_get_current_sample_rate();
             usb_packet.num_bins = FFT_SIZE / 2;
 
 #if MOCK_USB_DATA
@@ -267,13 +359,13 @@ void core1_fft() {
     
 
     while (true) {
-        while(write_index == read_index && adc_running) {
+        while((write_index == read_index || is_reconfiguring) && adc_running) {
             __nop();
         }
         #ifdef __MEASURE_FFT_TIME__
         absolute_time_t start_time = get_absolute_time();
         #endif
-        dsp_decimate_and_normalize(buffers[read_index], new_samples, DMA_BLOCK_SIZE);
+        dsp_decimate_and_normalize(buffers[read_index], new_samples, DMA_BLOCK_SIZE, dsp_get_current_oversampling());
         
         arm_biquad_cascade_df1_f32(&IIR_HPF_input_instance, new_samples, new_samples, DMA_BLOCK_SIZE);
         arm_biquad_cascade_df1_f32(&IIR_LPF_input_instance, new_samples, new_samples, DMA_BLOCK_SIZE);
