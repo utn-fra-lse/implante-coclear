@@ -1,0 +1,15 @@
+[project]
+name = "python"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.5.1",
+    "pyqt6>=6.11.0",
+    "pyqtgraph>=0.14.0",
+    "pyserial>=3.5",
+    "pyside6>=6.11.1",
+    "scipy>=1.18.0",
+    "sounddevice>=0.5.5",
+]
