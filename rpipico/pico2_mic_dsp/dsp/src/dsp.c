@@ -83,39 +83,64 @@ void split_complex_array(float32_t *complex_array, float32_t *real_array, float3
 }
 
 
+// Bandas logarítmicas del vocoder (espaciado log simulado, igual a python/scripts/cochlear_plotter.py).
+// fs = EFFECTIVE_SAMPLE_RATE = 16 kHz, Nyquist = 8 kHz, 256 bins -> resolución = 31.25 Hz/bin.
+const band_range_t LOG_BAND_RANGES[N_FILTERS] = {
+    {6,   10},  // Banda 1: ~187 - 312 Hz
+    {10,  16},  // Banda 2: ~312 - 500 Hz
+    {16,  25},  // Banda 3: ~500 - 781 Hz
+    {25,  40},  // Banda 4: ~781 - 1250 Hz
+    {40,  64},  // Banda 5: ~1250 - 2000 Hz
+    {64,  102}, // Banda 6: ~2000 - 3187 Hz
+    {102, 162}, // Banda 7: ~3187 - 5062 Hz
+    {162, 256}, // Banda 8: ~5062 - 8000 Hz
+};
+
 /**
- * @brief 
- * @param src[in] Array con FFT completa (magnitudes)
- * @param min_freq Frecuencia de corte inferior del filtro
- * @param max_freq Frecuencia de corte superior del filtro
+ * @brief Calcula la energía de una banda como el promedio de magnitud de la FFT en un rango de bins.
+ * Equivalente a `band_energies[i] = np.mean(mag[start:end])` en cochlear_plotter.py.
+ * @param magnitudes[in] Array con las magnitudes de la FFT (tamaño FFT_SIZE / 2)
+ * @param start_bin Índice de bin inicial de la banda (inclusive)
+ * @param end_bin Índice de bin final de la banda (exclusive)
  */
-float32_t dsp_get_filtered_range(float32_t *src, uint32_t min_freq, uint32_t max_freq) {
+float32_t dsp_get_band_energy(float32_t *magnitudes, uint16_t start_bin, uint16_t end_bin) {
 
-    uint16_t start_bin = (uint16_t) min_freq * FFT_SIZE / EFFECTIVE_SAMPLE_RATE;
-    uint16_t end_bin = (uint16_t) max_freq * FFT_SIZE / EFFECTIVE_SAMPLE_RATE;
     uint16_t size = end_bin - start_bin;
-    float32_t dst_temp = 0.0f;
+    float32_t sum = 0.0f;
 
-    for(uint32_t i = 0; i < size; i++) {
-        dst_temp += src[i + start_bin];
+    for (uint16_t i = start_bin; i < end_bin; i++) {
+        sum += magnitudes[i];
     }
 
-    return dst_temp / (float32_t) size;
+    return sum / (float32_t) size;
 }
 
 /**
- * @brief Genera el array de bandas a partir de las magnitudes de la FFT. Utiliza MIN_FREQ, MAX_FREQ y N_FILTERS para determinar los rangos de frecuencia.
+ * @brief Genera el array de energías por banda a partir de las magnitudes de la FFT.
+ * Utiliza LOG_BAND_RANGES (bandas logarítmicas) para determinar los rangos de bins de cada canal.
+ * La energía (float, típicamente << 1.0) se escala con ENERGY_TO_AMPLITUDE_GAIN y se satura
+ * a [0, 65535] antes de castear a uint16_t, para que trama_b_generate() reciba una amplitud
+ * que use el rango de bits que espera en vez de truncar siempre a 0.
  * @param src[in] Array con FFT completa (magnitudes)
  * @param out_data[out] Array datos para enviar trama
  */
 void dsp_compute_estimulos(float32_t *magnitudes, uint16_t *out_data) {
 
     for(uint32_t i = 0; i < N_FILTERS; i++) {
-        
-        out_data[i] = (uint16_t) dsp_get_filtered_range(
+
+        float32_t energy = dsp_get_band_energy(
             magnitudes,
-            MIN_FREQ + i * BANDWIDTH,
-            MIN_FREQ + (i + 1) * BANDWIDTH
+            LOG_BAND_RANGES[i].start_bin,
+            LOG_BAND_RANGES[i].end_bin
         );
+
+        float32_t amplitude = energy * ENERGY_TO_AMPLITUDE_GAIN;
+        if (amplitude < 0.0f) {
+            amplitude = 0.0f;
+        } else if (amplitude > 65535.0f) {
+            amplitude = 65535.0f;
+        }
+
+        out_data[i] = (uint16_t) amplitude;
     }
 }

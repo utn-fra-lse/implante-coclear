@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "pico/stdlib.h"
 #include "pico/stdio_usb.h"
 #include "pico/multicore.h"
@@ -43,6 +44,13 @@ volatile uint8_t read_index = 0;
 volatile bool adc_running = false;
 uint16_t out_data[N_FILTERS];
 
+// Mensaje encolado hacia el Core 0 vía queue_usb: agrupa en un solo puntero la FFT cruda
+// (ping-pongeada, ver core_comm_buffers en core1_fft) y una copia por valor de out_data
+// tomada en el mismo frame, para que ambos viajen sincronizados en el mismo paquete USB.
+typedef struct {
+    float32_t *fft_data;
+    uint16_t   band_energies[N_FILTERS];
+} usb_frame_msg_t;
 
 uint dma_chan_a;
 uint dma_chan_b;
@@ -101,7 +109,7 @@ int main()
     init_dma_with_irq(dma_chan_a);
     
     // Inicializar colas ANTES de lanzar el core 1 para evitar race conditions
-    queue_init(&queue_usb, sizeof(float32_t *), 2);
+    queue_init(&queue_usb, sizeof(usb_frame_msg_t *), 2);
     queue_init(&queue, sizeof(uint16_t *), 1);
     
     // Start core1
@@ -180,7 +188,7 @@ void init_dma_with_irq(uint dummy) {
 
 void core0_communication(){
 
-    float32_t *rx_fft_data = NULL;
+    usb_frame_msg_t *rx_frame_msg = NULL;
     fft_usb_packet_t usb_packet;
     
     uint16_t *trama_data = NULL;
@@ -199,22 +207,25 @@ void core0_communication(){
         //         }
         //     }
         // }
-        if(queue_try_remove(&queue_usb, &rx_fft_data)) {
+        if(queue_try_remove(&queue_usb, &rx_frame_msg)) {
             // Formateo de los datos en el Core 0
             usb_packet.sync[0] = 0xAA;
             usb_packet.sync[1] = 0x55;
             usb_packet.sample_rate = EFFECTIVE_SAMPLE_RATE;
             usb_packet.num_bins = FFT_SIZE / 2;
-            
+
 #if MOCK_USB_DATA
             // Generar un patrón lineal simple para verificar
             for (uint16_t i = 0; i < FFT_SIZE / 2; i++) {
                 usb_packet.real_part[i] = (float)i;
                 usb_packet.imag_part[i] = (float)((FFT_SIZE / 2) - i);
             }
+            memset(usb_packet.band_energies, 0, sizeof(usb_packet.band_energies));
 #else
             // Dividir el array complejo en real e imaginario
-            split_complex_array(rx_fft_data, usb_packet.real_part, usb_packet.imag_part, FFT_SIZE / 2);
+            split_complex_array(rx_frame_msg->fft_data, usb_packet.real_part, usb_packet.imag_part, FFT_SIZE / 2);
+            // Energías por banda calculadas en el Core 1 (dsp_compute_estimulos), para validación en PC
+            memcpy(usb_packet.band_energies, rx_frame_msg->band_energies, sizeof(usb_packet.band_energies));
 #endif
             send_fft_data_usb(&usb_packet);
         }
@@ -224,6 +235,7 @@ void core0_communication(){
 void core1_fft() {
     uint8_t comm_index = 0;
     float32_t core_comm_buffers[2][FFT_SIZE];
+    usb_frame_msg_t usb_frame_msgs[2]; // ping-pong, mismo índice que core_comm_buffers
     float32_t * new_samples    = (float32_t *) malloc(DMA_BLOCK_SIZE * sizeof(float32_t));
     float32_t * sliding_window = (float32_t *) malloc(FFT_SIZE * sizeof(float32_t));
     float32_t * fft_input      = (float32_t *) malloc(FFT_SIZE * sizeof(float32_t));
@@ -278,17 +290,7 @@ void core1_fft() {
 
         float32_t *current_fft_out = core_comm_buffers[comm_index];
         arm_rfft_fast_f32(&fft_instance, fft_input, current_fft_out, 0);
-        
-        // Enviar el puntero de datos crudos a través de la cola hacia el Core 0
-        #ifdef TIME_TO_SEND_DATA_US
-        if(time_us_32() - last_time > TIME_TO_SEND_DATA_US){
-            queue_try_add(&queue_usb, &current_fft_out);
-            last_time = time_us_32();
-        }
-        #else
-        queue_try_add(&queue_usb, &current_fft_out);
-        #endif
-        
+
         // Desempaquetar DC y eliminar Nyquist para que arm_cmplx_mag_f32 funcione bien
         dsp_unpack_cmsis_fft(current_fft_out);
         
@@ -307,6 +309,20 @@ void core1_fft() {
 
         dsp_compute_estimulos(magnitudes, out_data);
         queue_try_add(&queue, (void *) out_data);
+
+        // Enviar la FFT cruda junto con las energías por banda del mismo frame, en un solo
+        // mensaje, a través de la cola hacia el Core 0 (que arma y manda el paquete USB).
+        usb_frame_msgs[comm_index].fft_data = current_fft_out;
+        memcpy(usb_frame_msgs[comm_index].band_energies, out_data, sizeof(out_data));
+        usb_frame_msg_t *msg_ptr = &usb_frame_msgs[comm_index];
+        #ifdef TIME_TO_SEND_DATA_US
+        if(time_us_32() - last_time > TIME_TO_SEND_DATA_US){
+            queue_try_add(&queue_usb, &msg_ptr);
+            last_time = time_us_32();
+        }
+        #else
+        queue_try_add(&queue_usb, &msg_ptr);
+        #endif
         #ifdef GPIO_LATENCIA
         gpio_put(OSC_GPIO_PIN, !gpio_get(OSC_GPIO_PIN));
         #endif
