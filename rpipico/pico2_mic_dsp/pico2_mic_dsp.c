@@ -38,7 +38,12 @@ queue_t queue_usb;
 #define GPIO_LATENCIA
 #define OSC_GPIO_PIN 5
 
-uint16_t * buffers[N_DATA_BUFFERS];
+static uint16_t raw_buffers[N_DATA_BUFFERS][MAX_RAW_DMA_BLOCK_SIZE];
+uint16_t * buffers[N_DATA_BUFFERS] = {
+    raw_buffers[0],
+    raw_buffers[1],
+    raw_buffers[2]
+};
 volatile uint8_t write_index = 0;
 volatile uint8_t read_index = 0;
 volatile bool adc_running = false;
@@ -90,18 +95,6 @@ int main()
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
     gpio_put(PICO_DEFAULT_LED_PIN, 0);
-    // init_pwm_test(PIN_PWM_TEST1, 500);
-    // init_pwm_test(PIN_PWM_TEST2, 6000);
-    
-    
-    for (uint8_t i = 0; i < N_DATA_BUFFERS; ++i) {
-        buffers[i] = (uint16_t *) malloc(RAW_DMA_BLOCK_SIZE * sizeof(uint16_t));
-
-        if (!buffers[i]) {
-            // printf("[CORE 0] Failed to allocate memory for buffer %d\n", i);
-            return -1;
-        }
-    }
 
     // printf("[CORE 0] Config DMA\n");
     // Set up the DMA to start transferring data as soon as it appears in FIFO
@@ -205,9 +198,14 @@ void change_sample_rate(uint32_t fs) {
     dma_hw->ints0 = (1u << dma_chan_a) | (1u << dma_chan_b);
     adc_fifo_drain();
     
-    // 3. Resetear índices de buffers
+    // 3. Resetear índices de buffers y vaciar colas inter-core
     write_index = 0;
     read_index = 0;
+    
+    usb_frame_msg_t *dummy_usb_msg;
+    while (queue_try_remove(&queue_usb, &dummy_usb_msg));
+    uint16_t dummy_trama_data[N_FILTERS];
+    while (queue_try_remove(&queue, dummy_trama_data));
     
     // 4. Configurar nuevo reloj ADC y parámetros DSP / DMA
     float div_val = (48000000.0f / ((float)preset->adc_clk_khz * 1000.0f)) - 1.0f;
@@ -276,17 +274,21 @@ void core0_communication(){
     static uint8_t cmd_idx = 0;
 
     while(true) {
-        int c = getchar_timeout_us(0);
-        if (c != PICO_ERROR_TIMEOUT) {
-            if (c == '\n' || c == '\r') {
-                if (cmd_idx > 0) {
-                    cmd_buf[cmd_idx] = '\0';
-                    parse_cmd_and_change_fs(cmd_buf);
+        if (stdio_usb_connected()) {
+            int c = getchar_timeout_us(0);
+            if (c != PICO_ERROR_TIMEOUT) {
+                if (c == '\n' || c == '\r') {
+                    if (cmd_idx > 0) {
+                        cmd_buf[cmd_idx] = '\0';
+                        parse_cmd_and_change_fs(cmd_buf);
+                    }
+                    cmd_idx = 0;
+                } else if (cmd_idx < sizeof(cmd_buf) - 1) {
+                    cmd_buf[cmd_idx++] = (char)c;
                 }
-                cmd_idx = 0;
-            } else if (cmd_idx < sizeof(cmd_buf) - 1) {
-                cmd_buf[cmd_idx++] = (char)c;
             }
+        } else {
+            cmd_idx = 0;
         }
         
         if(queue_try_remove(&queue, trama_data)) {
@@ -327,39 +329,31 @@ void core0_communication(){
 
 void core1_fft() {
     uint8_t comm_index = 0;
-    float32_t core_comm_buffers[2][FFT_SIZE];
-    usb_frame_msg_t usb_frame_msgs[2]; // ping-pong, mismo índice que core_comm_buffers
-    float32_t * new_samples    = (float32_t *) malloc(DMA_BLOCK_SIZE * sizeof(float32_t));
-    float32_t * sliding_window = (float32_t *) malloc(FFT_SIZE * sizeof(float32_t));
-    float32_t * fft_input      = (float32_t *) malloc(FFT_SIZE * sizeof(float32_t));
+    static float32_t core_comm_buffers[2][FFT_SIZE];
+    static usb_frame_msg_t usb_frame_msgs[2]; // ping-pong, mismo índice que core_comm_buffers
+    static float32_t new_samples[DMA_BLOCK_SIZE];
+    static float32_t sliding_window[FFT_SIZE];
+    static float32_t fft_input[FFT_SIZE];
+    static float32_t fft_real[FFT_SIZE / 2];
+    static float32_t fft_imag[FFT_SIZE / 2];
+    static float32_t magnitudes[FFT_SIZE / 2];
     
     for(int i = 0; i < FFT_SIZE; i++) sliding_window[i] = 0.0f;
-    // float32_t * fft_output = (float32_t *)  malloc(FFT_SIZE * sizeof(float32_t));
-    float32_t * fft_real = (float32_t *)  malloc((FFT_SIZE / 2) * sizeof(float32_t));
-    float32_t * fft_imag = (float32_t *)  malloc((FFT_SIZE / 2) * sizeof(float32_t));
-    float32_t * magnitudes = (float32_t *)  malloc((FFT_SIZE / 2) * sizeof(float32_t));
     
     uint32_t last_time = time_us_32();
-    
-    if (!new_samples || !sliding_window || !fft_input || !magnitudes || !fft_real || !fft_imag) {
-        // printf("[CORE 1] Failed to allocate memory for FFT buffers\n");
-        return;
-    }
 
     init_filters(); // Initialize the IIR filter instance
     // FFT instance
     arm_rfft_fast_instance_f32 fft_instance;
     arm_status status = arm_rfft_fast_init_f32(&fft_instance, FFT_SIZE);
     while (status != ARM_MATH_SUCCESS) {
-        // printf("[CORE 1] FFT init failed\n");
         gpio_put(PICO_DEFAULT_LED_PIN, 1);
         sleep_ms(1000);
         status = arm_rfft_fast_init_f32(&fft_instance, FFT_SIZE);
     }
-    
 
     while (true) {
-        while((write_index == read_index || is_reconfiguring) && adc_running) {
+        while(write_index == read_index || is_reconfiguring || !adc_running) {
             __nop();
         }
         #ifdef __MEASURE_FFT_TIME__
@@ -390,14 +384,9 @@ void core1_fft() {
         // Compute magnitudes
         arm_cmplx_mag_f32(current_fft_out, magnitudes, FFT_SIZE / 2);
     
-        // Print first 20 FFT magnitudes
-        // printf("[CORE 1] First 20 FFT magnitudes at %u:\n", ADC_CLK_HZ); // COMENTADO: printf corrompe el binario USB
         #ifdef __MEASURE_FFT_TIME__
         int64_t elapsed_time = absolute_time_diff_us(start_time, get_absolute_time());
         printf("Tiempo de procesamiento: %lld us\n", elapsed_time);
-        #else
-        // send_freqs_magnitude(magnitudes, FFT_SIZE / SAMPLE_MULTIPLIER, (uint16_t) (ADC_CLK_HZ / FFT_SIZE));
-        // send_fft_data_binary(magnitudes, FFT_SIZE / 2);
         #endif
 
         dsp_compute_estimulos(magnitudes, out_data);
@@ -422,10 +411,6 @@ void core1_fft() {
         // Intercambiar buffer para el próximo frame
         comm_index = (comm_index + 1) % 2;
         read_index = (read_index + 1) % N_DATA_BUFFERS;
-        if (!adc_running) {
-            adc_running = true;
-            adc_run(true);
-        }
     }
 }
 

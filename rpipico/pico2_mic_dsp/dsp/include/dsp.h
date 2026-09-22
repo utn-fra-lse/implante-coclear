@@ -19,10 +19,12 @@
 
 // Configuracion de Oversampling
 #define OVERSAMPLING_FACTOR 4
+#define MAX_OVERSAMPLING_FACTOR 16U
 #define EFFECTIVE_SAMPLE_RATE (MAX_FREQ * SAMPLE_MULTIPLIER)
 #define ADC_CLK_HZ (EFFECTIVE_SAMPLE_RATE * OVERSAMPLING_FACTOR)
 
 #define RAW_DMA_BLOCK_SIZE ((FFT_SIZE / 2) * OVERSAMPLING_FACTOR)
+#define MAX_RAW_DMA_BLOCK_SIZE ((FFT_SIZE / 2) * MAX_OVERSAMPLING_FACTOR)
 
 // Ganancia lineal provisoria para llevar la energía de banda (promedio de magnitud FFT) a un
 // rango que aproveche los 16 bits de out_data que consume trama_b_generate() para el PIO TX.

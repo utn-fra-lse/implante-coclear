@@ -86,6 +86,8 @@ class SerialReaderThread(QThread):
                 cmd = f"SET_FS:{self.target_fs}\n"
                 self.ser.write(cmd.encode('ascii'))
                 self.ser.flush()
+                time.sleep(0.1)
+                self.ser.reset_input_buffer()
                 print(f"Sent command to Pico 2: {cmd.strip()}")
         except Exception as e:
             print(f"Error opening serial port: {e}")
@@ -238,6 +240,11 @@ class MainWindow(QMainWindow):
         self.checkbox_gate.toggled.connect(self.toggle_noise_gate)
         layout.addWidget(self.checkbox_gate, 2, 0)
 
+        self.checkbox_norm = QCheckBox("Normalizar Magnitud FFT (Escala 0.0 - 1.0 FS)")
+        self.checkbox_norm.setChecked(False)
+        self.checkbox_norm.toggled.connect(self.toggle_normalization)
+        layout.addWidget(self.checkbox_norm, 3, 0)
+
         self.label_rms = QLabel("Umbral RMS: Calibrando..." if auto_threshold_frames > 0 else "Umbral RMS: Inactivo")
         self.label_rms.setStyleSheet("color: #00ff88; font-weight: bold; font-size: 14px;")
         layout.addWidget(self.label_rms, 2, 1)
@@ -263,7 +270,15 @@ class MainWindow(QMainWindow):
             else:
                 self.label_rms.setText("Umbral RMS: Activado")
 
+    def toggle_normalization(self, checked):
+        if checked:
+            self.plot_mag.setYRange(0, 1.0, padding=0)
+        else:
+            self.plot_mag.setYRange(0, 10, padding=0)
+
     def update_plots(self, real_part, imag_part, magnitude, signal):
+        if self.checkbox_norm.isChecked():
+            magnitude = magnitude / 256.0
         self.curve_real.setData(self.freqs, real_part)
         self.curve_imag.setData(self.freqs, imag_part)
         self.curve_mag.setData(self.freqs, magnitude)

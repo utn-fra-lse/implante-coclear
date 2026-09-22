@@ -6,6 +6,7 @@ add_library(utils STATIC
 # Linkeo dependencias de la bibliotecas
 target_link_libraries(utils
     pico_stdlib
+    pico_stdio_usb
     hardware_pwm
 )
 
