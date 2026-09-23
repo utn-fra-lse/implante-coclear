@@ -30,6 +30,7 @@ def main():
     parser.add_argument("--baudrate", type=int, default=115200, help="Baud rate (ignorado por USB CDC)")
     parser.add_argument("--output", type=str, default="grabacion.wav", help="Archivo de salida (ej. audio.wav)")
     parser.add_argument("--cutoff", type=float, default=7000.0, help="Frecuencia de corte del filtro pasa bajos (Hz)")
+    parser.add_argument("--fs", type=int, default=16000, help="Frecuencia de muestreo ADC deseada en Hz (8000..64000)")
     args = parser.parse_args()
 
     try:

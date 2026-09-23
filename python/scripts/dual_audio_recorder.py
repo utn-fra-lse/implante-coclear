@@ -13,6 +13,7 @@ def main():
     parser.add_argument("--out-vocoder", type=str, default="grabacion_vocoder.wav", help="Archivo de salida Vocoder")
     parser.add_argument("--gain", type=float, default=1.0, help="Multiplicador de ganancia de audio (ej. 2.0, 10.0)")
     parser.add_argument("--cutoff", type=float, default=7000.0, help="Frecuencia de corte del filtro pasa bajos (Hz)")
+    parser.add_argument("--fs", type=int, default=16000, help="Frecuencia de muestreo ADC deseada en Hz (8000..64000)")
     args = parser.parse_args()
 
     try:

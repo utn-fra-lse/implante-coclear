@@ -316,6 +316,7 @@ def main():
     parser.add_argument("--play-audio", action="store_true", help="Escuchar la salida del Vocoder (Ruido Blanco Modulado)")
     parser.add_argument("--gain", type=float, default=1.0, help="Multiplicador de ganancia de audio (ej. 2.0, 10.0)")
     parser.add_argument("--auto-threshold", type=int, default=0, help="N frames para calibrar ruido de fondo (0=desactivado)")
+    parser.add_argument("--fs", type=int, default=16000, help="Frecuencia de muestreo ADC deseada en Hz (8000..64000)")
     args = parser.parse_args()
 
     global GLOBAL_GAIN

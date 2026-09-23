@@ -1,4 +1,5 @@
 #include "utils.h"
+#include "pico/stdio_usb.h"
 
 void init_pwm_test(uint gpio_pin, uint16_t freq_hz) {
     gpio_set_function(gpio_pin, GPIO_FUNC_PWM);
@@ -32,6 +33,7 @@ void generate_sample_buffer(uint8_t *buffer, uint16_t size, uint32_t sample_rate
 
 void send_fft_data_usb(const fft_usb_packet_t *packet) {
     if (!packet) return;
+    if (!stdio_usb_connected()) return; // Evita bloqueo si la PC cerró la conexión USB CDC
     
     // Usar fwrite es necesario porque maneja correctamente el buffer USB
     // (Llamar putchar_raw byte por byte causa sobrecarga y pérdida de datos).

@@ -4,7 +4,7 @@ import os
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QPushButton, 
     QLabel, QFrame, QHBoxLayout, QMessageBox, QLineEdit, QScrollArea,
-    QCheckBox, QDoubleSpinBox, QSpinBox, QFormLayout, QGroupBox
+    QCheckBox, QDoubleSpinBox, QSpinBox, QFormLayout, QGroupBox, QComboBox
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
@@ -118,6 +118,14 @@ class ScriptLauncherMenu(QMainWindow):
             form_layout.addRow("Baudrate:", baud_input)
             widgets['baudrate'] = baud_input
 
+            # Frecuencia ADC
+            fs_combo = QComboBox()
+            fs_combo.addItems(["8000", "16000", "32000", "64000"])
+            # fs_combo.addItems(["8000", "16000", "24000", "32000", "48000", "64000"])
+            fs_combo.setCurrentText("16000")
+            form_layout.addRow("Frecuencia ADC (Hz):", fs_combo)
+            widgets['fs'] = fs_combo
+
             if script_name in ["cochlear_plotter.py", "fft_plotter.py", "fft_audio_player.py", "dual_audio_recorder.py"]:
                 # Ganancia
                 gain_input = QDoubleSpinBox()
@@ -230,6 +238,10 @@ class ScriptLauncherMenu(QMainWindow):
             command.append("--baudrate")
             command.append(str(widgets['baudrate'].value()))
             
+            if 'fs' in widgets:
+                command.append("--fs")
+                command.append(widgets['fs'].currentText())
+                
             if 'gain' in widgets:
                 command.append("--gain")
                 command.append(str(widgets['gain'].value()))

@@ -2,6 +2,7 @@
 #define _DSP_H_
 
 #include <stdint.h>
+#include <stdbool.h>
 #include "arm_math.h"
 
 #define MAX_FREQ  8000
@@ -17,11 +18,13 @@
 #define SAMPLE_MULTIPLIER 2
 
 // Configuracion de Oversampling
-#define OVERSAMPLING_FACTOR 16
-#define EFFECTIVE_SAMPLE_RATE (MAX_FREQ * SAMPLE_MULTIPLIER) // 16 Khz
-#define ADC_CLK_HZ (EFFECTIVE_SAMPLE_RATE * OVERSAMPLING_FACTOR) // 256 Khz
+#define OVERSAMPLING_FACTOR 4
+#define MAX_OVERSAMPLING_FACTOR 16U
+#define EFFECTIVE_SAMPLE_RATE (MAX_FREQ * SAMPLE_MULTIPLIER)
+#define ADC_CLK_HZ (EFFECTIVE_SAMPLE_RATE * OVERSAMPLING_FACTOR)
 
 #define RAW_DMA_BLOCK_SIZE ((FFT_SIZE / 2) * OVERSAMPLING_FACTOR)
+#define MAX_RAW_DMA_BLOCK_SIZE ((FFT_SIZE / 2) * MAX_OVERSAMPLING_FACTOR)
 
 // Ganancia lineal provisoria para llevar la energía de banda (promedio de magnitud FFT) a un
 // rango que aproveche los 16 bits de out_data que consume trama_b_generate() para el PIO TX.
@@ -54,9 +57,14 @@ extern const band_range_t LOG_BAND_RANGES[N_FILTERS];
 extern arm_biquad_casd_df1_inst_f32 IIR_HPF_input_instance;
 extern arm_biquad_casd_df1_inst_f32 IIR_LPF_input_instance;
 
+#include "filter_coeffs.h"
+
 void init_filters();
+bool dsp_set_sample_rate(uint32_t fs);
+uint32_t dsp_get_current_sample_rate(void);
+uint8_t dsp_get_current_oversampling(void);
 void dsp_unpack_cmsis_fft(float32_t *fft_buffer);
-void dsp_decimate_and_normalize(uint16_t *src, float32_t *dst, uint16_t size);
+void dsp_decimate_and_normalize(uint16_t *src, float32_t *dst, uint16_t size, uint8_t oversampling);
 void split_complex_array(float32_t *complex_array, float32_t *real_array, float32_t *imag_array, uint16_t size);
 float32_t dsp_get_band_energy(float32_t *magnitudes, uint16_t start_bin, uint16_t end_bin);
 void dsp_compute_estimulos(float32_t *magnitudes, uint16_t *out_data);
