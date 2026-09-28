@@ -104,7 +104,7 @@ class ScriptLauncherMenu(QMainWindow):
         widgets = {}
         
         # Configuraciones específicas según el script
-        if script_name in ["cochlear_plotter.py", "fft_plotter.py", "fft_audio_player.py", "fft_audio_recorder.py", "dual_audio_recorder.py"]:
+        if script_name in ["estimulador_gui.py", "cochlear_plotter.py", "fft_plotter.py", "fft_audio_player.py", "fft_audio_recorder.py", "dual_audio_recorder.py"]:
             # Puerto
             port_input = QLineEdit("COM3")
             form_layout.addRow("Puerto Serial:", port_input)
@@ -119,12 +119,14 @@ class ScriptLauncherMenu(QMainWindow):
             widgets['baudrate'] = baud_input
 
             # Frecuencia ADC
-            fs_combo = QComboBox()
-            fs_combo.addItems(["8000", "16000", "32000", "64000"])
-            # fs_combo.addItems(["8000", "16000", "24000", "32000", "48000", "64000"])
-            fs_combo.setCurrentText("16000")
-            form_layout.addRow("Frecuencia ADC (Hz):", fs_combo)
-            widgets['fs'] = fs_combo
+            if script_name != "estimulador_gui.py":
+                # Frecuencia ADC
+                fs_combo = QComboBox()
+                fs_combo.addItems(["8000", "16000", "32000", "64000"])
+                # fs_combo.addItems(["8000", "16000", "24000", "32000", "48000", "64000"])
+                fs_combo.setCurrentText("16000")
+                form_layout.addRow("Frecuencia ADC (Hz):", fs_combo)
+                widgets['fs'] = fs_combo
 
             if script_name in ["cochlear_plotter.py", "fft_plotter.py", "fft_audio_player.py", "dual_audio_recorder.py"]:
                 # Ganancia
@@ -229,7 +231,7 @@ class ScriptLauncherMenu(QMainWindow):
             
         command = [sys.executable, script_path]
         
-        if script_name in ["cochlear_plotter.py", "fft_plotter.py", "fft_audio_player.py", "fft_audio_recorder.py", "dual_audio_recorder.py"]:
+        if script_name in ["estimulador_gui.py", "cochlear_plotter.py", "fft_plotter.py", "fft_audio_player.py", "fft_audio_recorder.py", "dual_audio_recorder.py"]:
             port = widgets['port'].text().strip()
             if not port:
                 QMessageBox.warning(self, "Falta dato", "El puerto serial es obligatorio.")

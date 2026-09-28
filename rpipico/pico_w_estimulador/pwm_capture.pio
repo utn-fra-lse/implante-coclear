@@ -1,0 +1,16 @@
+.program pwm_capture
+
+.wrap_target
+  wait 0 gpio 16      ; espera flanco de bajada para evitar medir lo mismo de nuevo
+  wait 1 gpio 16      ; espera flanco de subida
+
+  mov x, ~NULL        ; reinicia contador
+high:
+  jmp pin high_dec    ; si el pin sigue en alto → contar
+  jmp high_done       ; si no → fin del pulso
+high_dec:
+  jmp x-- high
+high_done:
+  mov isr, x          ; guarda x restante
+  push noblock
+.wrap
