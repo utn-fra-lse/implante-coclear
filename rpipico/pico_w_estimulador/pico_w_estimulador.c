@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
+#include "pico/stdio_usb.h"
 #include "hardware/spi.h"
 #include "hardware/i2c.h"
 #include "hardware/pwm.h"
@@ -113,12 +114,23 @@ void init_pio_capture() {
     pio_sm_set_enabled(pio, sm, true);
 }
 
+void process_usb_data() {
+    // Recepción de tramas binarias de 16 bits vía USB CDC (MSB-first)
+    if (stdio_usb_connected()) {
+        int c1 = getchar_timeout_us(0);
+        if (c1 != PICO_ERROR_TIMEOUT) {
+            int c2 = getchar_timeout_us(2000);
+            if (c2 != PICO_ERROR_TIMEOUT) {
+                uint16_t rx_trama = ((uint16_t)(c1 & 0xFF) << 8) | (uint16_t)(c2 & 0xFF);
+                queue_try_add(&g_queue, &rx_trama);
+            }
+        }
+    }
+}
+
 int main()
 {
     stdio_init_all();
-    
-    // Clock del sistema para USB
-    set_sys_clock_khz(30000, true);
 
     // Initialise the Wi-Fi chip
     if (cyw43_arch_init()) {
@@ -169,9 +181,12 @@ int main()
     uint16_t trama_data; // Example data to send
     
     while (true) {
+        process_usb_data();
+
         if(queue_try_remove(&g_queue, &trama_data)) {
             update_shift_register(level_shifter_config, trama_data);
             trama_data = 0xAB00;
+            cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, !cyw43_arch_gpio_get(CYW43_WL_GPIO_LED_PIN));
         }
         for (int i = 0; i < 16; i++) {
             update_shift_register(level_shifter_config, trama_data);
