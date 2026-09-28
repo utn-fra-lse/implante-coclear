@@ -33,13 +33,15 @@ project(pico_w_estimulador C CXX ASM)
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
-# Add executable. Default name is the project name, version 0.1
 
+
+# Add executable. Default name is the project name, version 0.1
 add_executable(pico_w_estimulador
-    pico_w_estimulador.c
-    init.c 
+pico_w_estimulador.c
+init.c 
 )
 
+pico_generate_pio_header(pico_w_estimulador ${CMAKE_CURRENT_LIST_DIR}/pwm_capture.pio)
 pico_set_program_name(pico_w_estimulador "pico_w_estimulador")
 pico_set_program_version(pico_w_estimulador "0.1")
 
@@ -65,6 +67,7 @@ target_link_libraries(pico_w_estimulador
         hardware_i2c
         hardware_pwm
         pico_cyw43_arch_none
+        hardware_pio
         mcp4725
         )
 
