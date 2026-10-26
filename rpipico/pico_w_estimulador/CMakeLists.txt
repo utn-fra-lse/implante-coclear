@@ -33,8 +33,6 @@ project(pico_w_estimulador C CXX ASM)
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
-
-
 # Add executable. Default name is the project name, version 0.1
 add_executable(pico_w_estimulador
 pico_w_estimulador.c
@@ -51,6 +49,7 @@ pico_enable_stdio_usb(pico_w_estimulador 1)
 
 
 add_subdirectory(mcp4725)
+add_subdirectory(api_rest)
 
 # Add the standard library to the build
 target_link_libraries(pico_w_estimulador
@@ -66,9 +65,10 @@ target_link_libraries(pico_w_estimulador
         hardware_spi
         hardware_i2c
         hardware_pwm
-        pico_cyw43_arch_none
+        # pico_cyw43_arch_none
         hardware_pio
         mcp4725
+        api_rest
         )
 
 pico_add_extra_outputs(pico_w_estimulador)

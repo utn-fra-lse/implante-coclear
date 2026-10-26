@@ -10,7 +10,8 @@
 #include "init.h"
 #include "pwm_capture.pio.h"
 #include "pico/util/queue.h"
-
+#include "api_rest.h"
+#include "pico/sync.h"
 
 // Optimizacion baja para que no se ignoren las variables en el debugger
 #pragma GCC optimize("O0")
@@ -51,6 +52,9 @@
 // Cola para compartir datos entre interrupcion y main
 queue_t g_queue;
 
+// Variable global para poder accederla desde la interrupción
+pwm_complementary_config_t g_pwm_config;
+
 /**
  * @brief Handler de interrupcion por dato
  * en el FIFO RX del PIO
@@ -74,7 +78,8 @@ void pio_irq_handler(void) {
         if(ticks_index == 16) {
             // Reinicio variables y paso datos al main
             ticks_index = 0;
-            queue_try_add(&g_queue, (void*)&data);
+            if (current_source == SOURCE_PIO)
+                queue_try_add(&g_queue, (void*)&data);
             data = 0;
         }
     }
@@ -114,6 +119,15 @@ void init_pio_capture() {
     pio_sm_set_enabled(pio, sm, true);
 }
 
+
+// Handler de la interrupción de final de ciclo (wrap) del PWM
+void on_pwm_wrap() {
+    uint slice_up = pwm_gpio_to_slice_num(g_pwm_config.pin_up);
+    pwm_clear_irq(slice_up);
+    set_half_bridge_duty(g_pwm_config, 0);
+    pwm_set_irq_enabled(slice_up, false);
+}
+
 void process_usb_data() {
     // Recepción de tramas binarias de 16 bits vía USB CDC (MSB-first)
     if (stdio_usb_connected()) {
@@ -122,10 +136,50 @@ void process_usb_data() {
             int c2 = getchar_timeout_us(2000);
             if (c2 != PICO_ERROR_TIMEOUT) {
                 uint16_t rx_trama = ((uint16_t)(c1 & 0xFF) << 8) | (uint16_t)(c2 & 0xFF);
-                queue_try_add(&g_queue, &rx_trama);
+                if (current_source == SOURCE_USB)
+                    queue_try_add(&g_queue, &rx_trama);
             }
         }
     }
+}
+
+uint8_t parity_check(uint16_t data) {
+    uint8_t parity = 0;
+    for (int i = 0; i < 15; i++) {
+        parity ^= (data >> i) & 1;
+    }
+    return parity;
+}
+
+void process_trama(uint16_t trama_data, level_shifter_config_t level_shifter_config, mcp4725_t dac1, mcp4725_t dac2) {
+    if ((trama_data >> 15) != 1) {
+        printf("Error: Trama inválida recibida: 0x%04X\n", trama_data);
+        return;
+    }
+    uint8_t n_estimulo = (trama_data >> 11) & 0x0F;
+    uint16_t mag = (trama_data >> 1) & 0x1FF;
+    printf("Trama válida recibida: 0x%04X | Estímulo: %d | Magnitud: %d\n", trama_data, n_estimulo, mag);
+    if ((trama_data >> 10) & 0x01) {
+        mcp4725_set_raw(dac1, 0, MCP4725_PD_NORMAL);
+        mcp4725_set_raw(dac2, (512 - mag) << 3, MCP4725_PD_NORMAL);
+    } else {
+        mcp4725_set_raw(dac1, mag << 3, MCP4725_PD_NORMAL);
+        mcp4725_set_raw(dac2, 0, MCP4725_PD_NORMAL);
+    }
+
+    // 2. Seleccion de estímulador
+    update_shift_register(level_shifter_config, (1 << n_estimulo));
+
+    // 3. Pulso de disparo del PWM
+    uint slice_up = pwm_gpio_to_slice_num(PIN_PWM_UP);
+    
+    uint32_t irq_status = save_and_disable_interrupts(); // Bloquea IRQs
+    set_half_bridge_duty(g_pwm_config, PWM_WRAP / 2);
+    pwm_clear_irq(slice_up);             // Limpiar IRQs pendientes
+    pwm_set_irq_enabled(slice_up, true);
+    restore_interrupts(irq_status);
+
+    cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, !cyw43_arch_gpio_get(CYW43_WL_GPIO_LED_PIN));
 }
 
 int main()
@@ -148,7 +202,7 @@ int main()
     gpio_pull_down(PIN_TRAMA_IN);
 
     // Inicialización de cola
-    queue_init(&g_queue, sizeof(uint16_t), 1);
+    queue_init(&g_queue, sizeof(uint16_t), 16);
     init_pio_capture();
 
     // Level shifter initialisation
@@ -165,35 +219,34 @@ int main()
     dac2.i2c = I2C_PORT;
 
     // Initialise the PWM for the half-bridge
-    pwm_complementary_config_t pwm_config = {
+    g_pwm_config = (pwm_complementary_config_t) {
         .pin_up = PIN_PWM_UP,
         .pin_down = PIN_PWM_DOWN,
         .wrap = PWM_WRAP,
         .deadtime_ticks = PWM_DEADTIME_TICKS,
         .pin_pwm_en = PIN_PWM_EN
     };
-    init_pwm_deadtime(pwm_config);
-    set_half_bridge_duty(pwm_config, PWM_WRAP / 2);
+    init_pwm_deadtime(g_pwm_config);
+    set_half_bridge_duty(g_pwm_config, 0);
+    irq_set_exclusive_handler(PWM_IRQ_WRAP, on_pwm_wrap);
+    irq_set_enabled(PWM_IRQ_WRAP, true);
+    
+    api_rest_init();
+    uint16_t trama_data;
 
     // Example to turn on the Pico W LED
     cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
-
-    uint16_t trama_data; // Example data to send
     
     while (true) {
-        process_usb_data();
+        // Polling USB condicionado por la API REST
+        if (current_source == SOURCE_USB) {
+            process_usb_data();
+        }
+        // Process data from PIO (IRQ)
 
         if(queue_try_remove(&g_queue, &trama_data)) {
-            update_shift_register(level_shifter_config, trama_data);
-            trama_data = 0xAB00;
-            cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, !cyw43_arch_gpio_get(CYW43_WL_GPIO_LED_PIN));
+            process_trama(trama_data, level_shifter_config, dac1, dac2);
         }
-        for (int i = 0; i < 16; i++) {
-            update_shift_register(level_shifter_config, trama_data);
-            trama_data++;
-            sleep_us(5);
-        }
-
-        sleep_ms(1000);
+        sleep_ms(50);
     }
 }

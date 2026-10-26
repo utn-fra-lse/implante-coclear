@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Probador de Placa Estimuladora (Web)</title>
+    <style>
+        :root {
+            --bg-color: #f5f6fa;
+            --panel-bg: #ffffff;
+            --text-color: #2c3e50;
+            --border-color: #dcdde1;
+            --primary: #2980b9;
+            --primary-hover: #3498db;
+            --success: #27ae60;
+            --danger: #e74c3c;
+            --gray: #7f8c8d;
+            --dark-btn: #34495e;
+            --console-bg: #1e1e1e;
+            --console-text: #00ff88;
+        }
+
+        body {
+            font-family: 'Arial', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 20px;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        h1 { margin-top: 0; font-size: 24px; color: var(--text-color); }
+
+        .panel {
+            background: var(--panel-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+
+        .panel-title {
+            font-weight: bold;
+            font-size: 16px;
+            margin-bottom: 15px;
+            color: var(--text-color);
+            border-bottom: 2px solid var(--border-color);
+            padding-bottom: 5px;
+        }
+
+        .flex-row { display: flex; gap: 15px; align-items: center; }
+        .flex-grow { flex-grow: 1; }
+        
+        .main-container {
+            display: flex;
+            gap: 15px;
+            flex-grow: 1;
+            min-height: 0;
+        }
+
+        .left-col { flex: 3; display: flex; flex-direction: column; min-width: 600px;}
+        .right-col { flex: 2; display: flex; flex-direction: column; }
+
+        button {
+            cursor: pointer;
+            border: none;
+            border-radius: 5px;
+            padding: 8px 12px;
+            font-weight: bold;
+            transition: all 0.2s;
+        }
+
+        button.btn-primary { background-color: var(--primary); color: white; }
+        button.btn-primary:hover { background-color: var(--primary-hover); }
+        button.btn-success { background-color: var(--success); color: white; }
+        
+        input[type="number"], select {
+            padding: 6px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+        }
+
+        /* Controles de la grilla */
+        .grid-header {
+            display: grid;
+            grid-template-columns: 80px 1fr 280px;
+            gap: 10px;
+            font-weight: bold;
+            color: var(--primary);
+            margin-bottom: 10px;
+            padding-right: 15px; /* scrollbar offset */
+        }
+
+        .scroll-area {
+            overflow-y: auto;
+            flex-grow: 1;
+            border: 1px solid var(--border-color);
+            padding: 10px;
+            border-radius: 5px;
+            background: #fdfdfd;
+        }
+
+        .electrode-row {
+            display: grid;
+            grid-template-columns: 80px 1fr 280px;
+            gap: 10px;
+            align-items: center;
+            margin-bottom: 8px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #ecf0f1;
+        }
+
+        .toggle-btn {
+            background-color: var(--dark-btn);
+            color: #bdc3c7;
+            padding: 6px;
+        }
+        .toggle-btn.active {
+            background-color: var(--success);
+            color: white;
+        }
+
+        .amp-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        
+        input[type="range"] { flex-grow: 1; }
+        .amp-input { width: 60px; text-align: center; }
+        
+        .btn-zero {
+            background-color: var(--gray);
+            color: white;
+            padding: 6px 10px;
+        }
+
+        .preview-text {
+            font-family: 'Consolas', monospace;
+            font-size: 13px;
+            color: var(--success);
+            white-space: pre;
+        }
+        .preview-text.disabled { color: gray; }
+
+        /* Consola */
+        #console {
+            background-color: var(--console-bg);
+            color: var(--console-text);
+            font-family: 'Consolas', monospace;
+            font-size: 13px;
+            flex-grow: 1;
+            width: 100%;
+            border: none;
+            border-radius: 5px;
+            padding: 10px;
+            resize: none;
+            box-sizing: border-box;
+            margin-bottom: 10px;
+        }
+
+        .big-send-btn {
+            width: 100%;
+            padding: 15px;
+            font-size: 16px;
+            margin-bottom: 15px;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Probador de Placa Estimuladora (API REST)</h1>
+
+    <!-- Panel de Configuración de Fuente -->
+    <div class="panel">
+        <div class="flex-row">
+            <span style="font-weight: bold;">Fuente de Datos Activa del Hardware:</span>
+            <select id="source-select">
+                <option value="PIO">Hardware PIO</option>
+                <option value="USB">Puerto USB Serial</option>
+                <option value="REST" selected>API REST (Wi-Fi)</option>
+            </select>
+            <button class="btn-primary" onclick="setSource()">Aplicar Fuente</button>
+            <span id="source-status" style="margin-left: 15px; font-weight: bold; color: var(--gray);">Estado: No sincronizado</span>
+        </div>
+    </div>
+
+    <!-- Contenedor Principal -->
+    <div class="main-container">
+        <!-- Columna Izquierda -->
+        <div class="left-col panel">
+            <div class="panel-title">Configuración de Electrodos (0 - 15)</div>
+            
+            <div class="flex-row" style="margin-bottom: 15px;">
+                <button class="btn-primary" onclick="setAllChecks(true)">Seleccionar Todos</button>
+                <button class="btn-primary" onclick="setAllChecks(false)">Desmarcar Todos</button>
+                <span style="margin-left: auto;">Amplitud masiva:</span>
+                <input type="number" id="bulk-amp" min="-511" max="511" value="0" style="width: 70px;">
+                <button class="btn-primary" onclick="applyBulkAmp()">Aplicar a Todos</button>
+            </div>
+
+            <div class="grid-header">
+                <div>Electrodo</div>
+                <div>Amplitud (-511 a +511)</div>
+                <div>Previsualización Trama (Hex / Bin)</div>
+            </div>
+
+            <div class="scroll-area" id="electrodes-container">
+                <!-- Se inyecta por JS -->
+            </div>
+        </div>
+
+        <!-- Columna Derecha -->
+        <div class="right-col panel">
+            <button class="btn-primary big-send-btn" onclick="sendSingleShot()">Enviar Tramas Seleccionadas (Single Shot)</button>
+            
+            <div class="panel-title">Monitor de Transmisión</div>
+            <textarea id="console" readonly></textarea>
+            <button class="btn-primary" onclick="document.getElementById('console').value = ''">Limpiar Consola</button>
+        </div>
+    </div>
+
+    <script>
+        const NUM_ELECTRODES = 16;
+        const SNAP_THRESHOLD = 15;
+        const channels = [];
+
+        // --- Lógica Matemática (Replicada de Python) ---
+        function computeParity(frame15) {
+            let parity = 0;
+            let val = frame15 & 0xFFFE;
+            while(val) {
+                parity ^= (val & 1);
+                val >>= 1;
+            }
+            return parity & 1;
+        }
+
+        function buildStimulusFrame(idx, amp) {
+            let amp10 = amp & 0x3FF;
+            let frame15 = (1 << 15) | ((idx & 0x0F) << 11) | (amp10 << 1);
+            let parity = computeParity(frame15);
+            return frame15 | parity;
+        }
+
+        function toBinString(num, bits) {
+            return num.toString(2).padStart(bits, '0');
+        }
+
+        // --- Utilidades de Interfaz ---
+        function logMsg(msg) {
+            const cons = document.getElementById('console');
+            const now = new Date();
+            const timeStr = now.toTimeString().split(' ')[0];
+            cons.value += `[${timeStr}] ${msg}\n`;
+            cons.scrollTop = cons.scrollHeight;
+        }
+
+        // --- Construcción del DOM para Electrodos ---
+        const container = document.getElementById('electrodes-container');
+        for (let i = 0; i < NUM_ELECTRODES; i++) {
+            const row = document.createElement('div');
+            row.className = 'electrode-row';
+
+            // Toggle Button
+            const toggleBtn = document.createElement('button');
+            toggleBtn.className = 'toggle-btn active';
+            toggleBtn.innerText = `E. ${i.toString().padStart(2, '0')}`;
+            
+            // Amp Controls
+            const ampDiv = document.createElement('div');
+            ampDiv.className = 'amp-controls';
+            
+            const slider = document.createElement('input');
+            slider.type = 'range';
+            slider.min = -511;
+            slider.max = 511;
+            slider.value = 0;
+
+            const inputNum = document.createElement('input');
+            inputNum.type = 'number';
+            inputNum.className = 'amp-input';
+            inputNum.min = -511;
+            inputNum.max = 511;
+            inputNum.value = 0;
+
+            const zeroBtn = document.createElement('button');
+            zeroBtn.className = 'btn-zero';
+            zeroBtn.innerText = '0';
+            zeroBtn.title = "Restablecer a 0";
+
+            ampDiv.appendChild(slider);
+            ampDiv.appendChild(inputNum);
+            ampDiv.appendChild(zeroBtn);
+
+            // Preview Text
+            const preview = document.createElement('div');
+            preview.className = 'preview-text';
+
+            row.appendChild(toggleBtn);
+            row.appendChild(ampDiv);
+            row.appendChild(preview);
+            container.appendChild(row);
+
+            // Objeto de canal
+            const channel = {
+                idx: i,
+                active: true,
+                amp: 0,
+                ui: { toggleBtn, slider, inputNum, preview }
+            };
+            channels.push(channel);
+
+            // Event Listeners
+            toggleBtn.onclick = () => {
+                channel.active = !channel.active;
+                toggleBtn.className = channel.active ? 'toggle-btn active' : 'toggle-btn';
+                updatePreview(channel);
+            };
+
+            zeroBtn.onclick = () => {
+                channel.amp = 0;
+                slider.value = 0;
+                inputNum.value = 0;
+                updatePreview(channel);
+            };
+
+            slider.oninput = (e) => {
+                let val = parseInt(e.target.value);
+                if (Math.abs(val) <= SNAP_THRESHOLD && val !== 0) {
+                    val = 0;
+                    slider.value = 0;
+                }
+                inputNum.value = val;
+                channel.amp = val;
+                updatePreview(channel);
+            };
+
+            inputNum.oninput = (e) => {
+                let val = parseInt(e.target.value);
+                if (isNaN(val)) val = 0;
+                if (val > 511) val = 511;
+                if (val < -511) val = -511;
+                slider.value = val;
+                channel.amp = val;
+                updatePreview(channel);
+            };
+
+            updatePreview(channel);
+        }
+
+        function updatePreview(ch) {
+            if (ch.active) {
+                const frame = buildStimulusFrame(ch.idx, ch.amp);
+                const parity = frame & 1;
+                const binStr = toBinString(frame, 16);
+                const formattedBin = `${binStr[0]} ${binStr.substring(1,5)} ${binStr.substring(5,15)} ${binStr[15]}`;
+                const hexStr = `0x${frame.toString(16).toUpperCase().padStart(4, '0')}`;
+                
+                ch.ui.preview.innerText = `${hexStr}  [${formattedBin}] P=${parity}`;
+                ch.ui.preview.className = 'preview-text';
+            } else {
+                ch.ui.preview.innerText = "--- (Desactivado) ---";
+                ch.ui.preview.className = 'preview-text disabled';
+            }
+        }
+
+        // --- Acciones Masivas ---
+        function setAllChecks(state) {
+            channels.forEach(ch => {
+                ch.active = state;
+                ch.ui.toggleBtn.className = state ? 'toggle-btn active' : 'toggle-btn';
+                updatePreview(ch);
+            });
+        }
+
+        function applyBulkAmp() {
+            let val = parseInt(document.getElementById('bulk-amp').value);
+            if (isNaN(val)) val = 0;
+            if (val > 511) val = 511;
+            if (val < -511) val = -511;
+
+            channels.forEach(ch => {
+                ch.amp = val;
+                ch.ui.slider.value = val;
+                ch.ui.inputNum.value = val;
+                updatePreview(ch);
+            });
+        }
+
+        // --- Peticiones de Red (REST API) ---
+        async function setSource() {
+            const select = document.getElementById('source-select');
+            const val = select.value;
+            const statusLabel = document.getElementById('source-status');
+            
+            try {
+                statusLabel.innerText = "Enviando...";
+                statusLabel.style.color = "var(--gray)";
+                
+                const response = await fetch('/api/source', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: `source=${val}`
+                });
+
+                if (response.ok) {
+                    statusLabel.innerText = `Estado: Sincronizado (${val})`;
+                    statusLabel.style.color = "var(--success)";
+                    logMsg(`[Config] Fuente de hardware cambiada a: ${val}`);
+                } else {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+            } catch (error) {
+                statusLabel.innerText = "Estado: Error de red";
+                statusLabel.style.color = "var(--danger)";
+                logMsg(`[Error] Fallo al cambiar fuente: ${error.message}`);
+            }
+        }
+
+        async function sendSingleShot() {
+            const activeChannels = channels.filter(ch => ch.active);
+            
+            if (activeChannels.length === 0) {
+                alert("No hay ningún electrodo tildado para enviar.");
+                return;
+            }
+
+            logMsg(`--- Iniciando Disparo Único (${activeChannels.length} tramas) vía REST ---`);
+
+            for (const ch of activeChannels) {
+                const frame = buildStimulusFrame(ch.idx, ch.amp);
+                const hexStr = `0x${frame.toString(16).toUpperCase().padStart(4, '0')}`;
+                const parity = frame & 1;
+                const binStr = toBinString(frame, 16);
+                const formattedBin = `${binStr[0]} ${binStr.substring(1,5)} ${binStr.substring(5,15)} ${binStr[15]}`;
+
+                try {
+                    const response = await fetch('/api/estimulo', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: `data=${hexStr}`
+                    });
+
+                    if (response.ok) {
+                        logMsg(`[E. ${ch.idx.toString().padStart(2,'0')}] Amp: ${ch.amp > 0 ? '+':''}${ch.amp} -> Trama: ${hexStr} [${formattedBin}] | Paridad=${parity} | ENVIADO HTTP OK`);
+                    } else {
+                        logMsg(`[E. ${ch.idx.toString().padStart(2,'0')}] ERROR HTTP ${response.status}`);
+                    }
+                } catch (error) {
+                    logMsg(`[E. ${ch.idx.toString().padStart(2,'0')}] ERROR DE RED: ${error.message}`);
+                    break; // Cortar el envío si el dispositivo se desconectó
+                }
+            }
+            logMsg(`--- Fin del Disparo Único ---`);
+        }
+    </script>
+</body>
+</html>
